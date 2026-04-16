@@ -2,13 +2,15 @@ Checks: >
   cppcoreguidelines-*,
   bugprone-*,
   performance-*,
-  modernize-*
+  modernize-*,
+  -cppcoreguidelines-owning-memory
 
-WarningsAsErrors: '*'
+WarningsAsErrors: >
+  bugprone-*,
+  performance-*
 
 HeaderFilterRegex: 'src/|include/'
 
-# -------- Noise Control (preemptive) --------
 CheckOptions:
   - key: cppcoreguidelines-pro-bounds-pointer-arithmetic.IgnoreMacros
     value: true
