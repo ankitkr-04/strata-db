@@ -40,3 +40,6 @@ core.*
 
 #compiled_commands
 compile_commands.json
+
+#agents
+.agents/
