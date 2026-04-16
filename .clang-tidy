@@ -1,0 +1,16 @@
+Checks: >
+  cppcoreguidelines-*,
+  bugprone-*,
+  performance-*,
+  modernize-*
+
+WarningsAsErrors: '*'
+
+HeaderFilterRegex: 'src/|include/'
+
+# -------- Noise Control (preemptive) --------
+CheckOptions:
+  - key: cppcoreguidelines-pro-bounds-pointer-arithmetic.IgnoreMacros
+    value: true
+
+FormatStyle: none

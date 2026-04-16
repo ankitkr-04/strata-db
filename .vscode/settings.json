@@ -1,0 +1,25 @@
+{
+  "clangd.arguments": [
+    "--background-index",
+    "--clang-tidy",
+    "--completion-style=detailed",
+    "--header-insertion=never",
+    "--pch-storage=memory"
+  ],
+
+  "editor.formatOnSave": true,
+
+  "[cpp]": {
+    "editor.defaultFormatter": "llvm-vs-code-extensions.vscode-clangd"
+  },
+
+  "files.exclude": {
+    "**/build": true,
+    "**/out": true
+  },
+
+  "search.exclude": {
+    "**/build": true,
+    "**/out": true
+  }
+}

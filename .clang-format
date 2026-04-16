@@ -1,0 +1,28 @@
+BasedOnStyle: LLVM
+
+IndentWidth: 4
+ColumnLimit: 100
+
+PointerAlignment: Left
+ReferenceAlignment: Left
+
+BreakBeforeBraces: Allman
+
+AllowShortFunctionsOnASingleLine: Empty
+AllowShortLambdasOnASingleLine: Inline
+
+
+RequiresClausePosition: SingleLine
+IndentRequiresClause: true
+
+
+SortIncludes: CaseSensitive
+IncludeBlocks: Regroup
+
+
+AlwaysBreakTemplateDeclarations: Yes
+BinPackParameters: false
+BinPackArguments: false
+
+# -------- Misc --------
+SpaceBeforeParens: ControlStatements

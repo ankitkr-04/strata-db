@@ -1,0 +1,42 @@
+# Build
+build/
+out/
+bin/
+lib/
+
+# CMake
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+compile_commands.json
+
+# Tooling
+.cache/
+.clangd/
+
+# Profiling
+perf.data
+perf.data.old
+callgrind.out.*
+
+# OS / IDE
+.DS_Store
+.idea/
+*.swp
+
+# VSCode (selective)
+.vscode/launch.json
+.vscode/tasks.json
+
+# Binaries
+*.o
+*.so
+*.a
+*.exe
+
+# Crash dumps
+core
+core.*
+
+#compiled_commands
+compile_commands.json
