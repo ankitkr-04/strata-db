@@ -27,7 +27,7 @@ The build configuration is defined primarily in `CMakeLists.txt`, with code-styl
 ### Target Model
 - `stratadb_strict_warnings` is defined as an `INTERFACE` target for warning policy.
 - `stratadb` is defined as a static library target.
-- `stratadb` is currently built from `src/memory/epoch_manager.cpp`.
+- `stratadb` is currently built from `src/*`.
 - `stratadb` links against `stratadb_strict_warnings`.
 - Target-level compile feature requirement is `cxx_std_26`.
 
@@ -35,9 +35,9 @@ The build configuration is defined primarily in `CMakeLists.txt`, with code-styl
 - Testing is enabled with `enable_testing()`.
 - GoogleTest is fetched through `FetchContent` (release `v1.17.0`).
 - `INSTALL_GTEST` is set to `OFF`.
-- Test binary: `epoch_manager_tests` built from `tests/memory/epoch_manager_test.cpp`.
+- Test binary: `tests` built from `tests/*`.
 - Test binary links `stratadb`, `GTest::gtest_main`, and `stratadb_strict_warnings`.
-- Tests are registered through `gtest_discover_tests(epoch_manager_tests)`.
+- Tests are registered through `gtest_discover_tests(tests)`.
 - The same sanitizer options are conditionally applied to both library and test targets.
 
 ### LTO Control
