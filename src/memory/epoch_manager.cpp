@@ -91,13 +91,9 @@ void EpochManager::retire_node(void* ptr, void (*deleter)(void*)) noexcept {
 void EpochManager::reclaim() noexcept {
     assert(thread_index_ != INVALID_THREAD);
 
-    // Start with current global epoch
     uint64_t min_epoch = global_epoch_.load(std::memory_order_acquire);
 
-    // Find minimum epoch among all ACTIVE threads
-    // This represents the oldest possible reader
     for (const ThreadState& state : thread_states_) {
-
         if (!state.in_use.load(std::memory_order_acquire))
             continue;
 
@@ -106,18 +102,25 @@ void EpochManager::reclaim() noexcept {
             min_epoch = std::min(min_epoch, e);
     }
 
-    // Only reclaim from THIS thread's retire list (ownership invariant)
     auto& retire_list = thread_states_[thread_index_].retire_list_;
 
-    // Safe to delete nodes strictly older than min_epoch
-    // (< is critical; <= would risk use-after-free)
-    std::erase_if(retire_list, [&](auto& node) {
+    // ---- manual compaction (replaces erase_if) ----
+    std::size_t write = 0;
+
+    for (std::size_t read = 0; read < retire_list.size(); ++read) {
+        auto& node = retire_list[read];
+
         if (node.retire_epoch < min_epoch) {
-            node.deleter(node.ptr);
-            return true;
+            node.deleter(node.ptr); // reclaim
+        } else {
+            if (write != read) {
+                retire_list[write] = node;
+            }
+            ++write;
         }
-        return false;
-    });
+    }
+
+    retire_list.resize(write);
 }
 
 } // namespace stratadb::memory

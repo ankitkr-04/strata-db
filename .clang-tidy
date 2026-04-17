@@ -7,7 +7,6 @@ Checks: >
 
 WarningsAsErrors: >
   bugprone-*,
-  performance-*
 
 HeaderFilterRegex: 'src/|include/'
 

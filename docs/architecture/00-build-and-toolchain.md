@@ -1,53 +1,36 @@
-# Build System and Toolchain
+# Build and Toolchain Architecture
 
 Author: Ankit Kumar
 Date: 2026-04-17
 
 ## Purpose
-Provide a stable, verified reference for how StrataDB is built and validated in this repository so contributors can make changes without introducing toolchain drift.
+Describe the active build and test toolchain in this repository so contributors can build, run tests, and diagnose performance with the same assumptions.
 
 ## Overview
-StrataDB currently uses a CMake-based C++26 toolchain with strict warning enforcement, optional sanitizer profiles, optional LTO, and GoogleTest-based unit testing. This document records the active configuration in the repository and the constraints contributors should preserve when evolving build settings.
+StrataDB uses CMake with C++26, strict compiler warnings, optional sanitizers, optional LTO, and GoogleTest-based unit tests. The build produces a static library target (`stratadb`) and one test executable target (`stratadb_tests`).
 
 ## System Context
-The build configuration is defined primarily in `CMakeLists.txt`, with code-style and static-analysis policies in `.clang-format` and `.clang-tidy`. Repository hygiene for generated artifacts is controlled by `.gitignore`.
+- Primary build file: `CMakeLists.txt`
+- Library implementation files used by the build:
+	- `src/memory/epoch_manager.cpp`
+	- `src/config/config_manager.cpp`
+- Test files used by the build:
+	- `tests/memory/epoch_manager_test.cpp`
+	- `tests/config/config_manager_test.cpp`
+- Attached profiling artifact: `real_perf.txt`
 
-## Build Configuration
+## Components and Responsibilities
 
-### CMake Baseline
-- Minimum required CMake version: `3.28`.
-- Project language: `CXX`.
-- Enforced language standard: `C++26` (`CMAKE_CXX_STANDARD 26`, required, extensions disabled).
+### Build Configuration
+- Minimum CMake version: `3.28`
+- Language: `CXX`
+- Standard: `C++26` (`CMAKE_CXX_STANDARD 26`, required, no compiler extensions)
 - Compilation database export is enabled (`CMAKE_EXPORT_COMPILE_COMMANDS ON`).
 
-### Linker Configuration
-- Global link options include `-fuse-ld=mold`.
-- Environments building this repository must provide a linker compatible with that flag.
+### Warning Policy
+An interface target named `stratadb_warnings` centralizes warning flags and is linked into both production and test targets.
 
-### Target Model
-- `stratadb_strict_warnings` is defined as an `INTERFACE` target for warning policy.
-- `stratadb` is defined as a static library target.
-- `stratadb` is currently built from `src/*`.
-- `stratadb` links against `stratadb_strict_warnings`.
-- Target-level compile feature requirement is `cxx_std_26`.
-
-### Test Targets and Framework
-- Testing is enabled with `enable_testing()`.
-- GoogleTest is fetched through `FetchContent` (release `v1.17.0`).
-- `INSTALL_GTEST` is set to `OFF`.
-- Test binary: `tests` built from `tests/*`.
-- Test binary links `stratadb`, `GTest::gtest_main`, and `stratadb_strict_warnings`.
-- Tests are registered through `gtest_discover_tests(tests)`.
-- The same sanitizer options are conditionally applied to both library and test targets.
-
-### LTO Control
-- `STRATADB_ENABLE_LTO` (default `OFF`) controls LTO.
-- When enabled, interprocedural optimization is turned on for target `stratadb`.
-
-## Compiler Safety Policy
-Strict warnings are treated as part of correctness, not optional linting.
-
-Enabled warning/error flags:
+Configured warnings include:
 - `-Wall`
 - `-Wextra`
 - `-Wpedantic`
@@ -58,63 +41,75 @@ Enabled warning/error flags:
 - `-Wold-style-cast`
 - `-Wcast-align`
 - `-Werror`
+- `-Wno-interference-size`
 
-## Sanitizer Profiles
-The CMake configuration exposes dedicated options for runtime diagnostics:
+### Library Target
+- Target: `stratadb` (`STATIC`)
+- Sources:
+	- `src/memory/epoch_manager.cpp`
+	- `src/config/config_manager.cpp`
+- Includes:
+	- `PUBLIC include`
+	- `PRIVATE src`
+- Link option:
+	- `-fuse-ld=mold`
 
-- `STRATADB_ENABLE_ASAN`: applies `-fsanitize=address` at compile and link time for `stratadb`.
-- `STRATADB_ENABLE_UBSAN`: applies `-fsanitize=undefined` at compile and link time for `stratadb`.
-- `STRATADB_ENABLE_TSAN`: applies `-fsanitize=thread` at compile and link time for `stratadb`.
+### Test Target
+- Testing is enabled with `enable_testing()`.
+- GoogleTest is fetched via `FetchContent` (v1.17.0 tarball URL).
+- Target: `stratadb_tests`
+- Sources:
+	- `tests/memory/epoch_manager_test.cpp`
+	- `tests/config/config_manager_test.cpp`
+- Linked libraries:
+	- `stratadb`
+	- `GTest::gtest_main`
+	- `stratadb_warnings`
+- Registration method:
+	- `gtest_discover_tests(stratadb_tests)`
 
-All three options default to `OFF` and are intended for explicit diagnostic builds.
+### Optional Build Modes
+Build options in `CMakeLists.txt`:
+- `STRATADB_ENABLE_ASAN`
+- `STRATADB_ENABLE_UBSAN`
+- `STRATADB_ENABLE_TSAN`
+- `STRATADB_ENABLE_LTO`
 
-## Formatting and Static Analysis
+Sanitizer options apply to both `stratadb` and `stratadb_tests` through the shared `enable_sanitizers(...)` helper.
 
-### clang-format Policy
-The repository style is LLVM-based with explicit overrides for readability and modern C++ syntax handling, including:
-- `IndentWidth: 4`
-- `ColumnLimit: 120`
-- `BreakBeforeBraces: Attach`
-- `RequiresClausePosition: SingleLine`
-- `BinPackParameters: false`
-- `BinPackArguments: false`
+## Data Flow
+1. CMake configures targets and compile/link options from `CMakeLists.txt`.
+2. `stratadb` is built as the core static library.
+3. `stratadb_tests` links `stratadb` and GoogleTest.
+4. `gtest_discover_tests(...)` exposes individual test cases to CTest.
+5. Profiling data in `real_perf.txt` reports runtime hotspots from `stratadb_tests` execution.
 
-Additional alignment and wrapping controls are enabled, including:
-- `AlignAfterOpenBracket: Align`
-- `AlignOperands: Align`
-- `AlignTrailingComments: true`
-- `UseTab: Never`
+## Key Design Decisions
+- Shared warning policy through an interface target keeps diagnostics consistent across library and tests.
+- Shared sanitizer helper avoids drift between production and test instrumentation.
+- A dedicated test executable containing both memory and config tests provides one place for correctness and performance profiling.
+- Linker selection (`-fuse-ld=mold`) is explicit to stabilize link-time behavior across environments.
 
-### clang-tidy Policy
-Enabled check groups:
-- `cppcoreguidelines-*`
-- `bugprone-*`
-- `performance-*`
-- `modernize-*`
+## Trade-offs and Constraints
+- The linker requirement (`mold`) must be available in the environment for successful linking with current flags.
+- Strict warning-as-error behavior can block builds for minor issues, but improves long-term code quality.
+- A single combined test binary is convenient for CTest integration, but can mix module-specific performance signals in one profile.
 
-Explicit check exclusions:
-- `-cppcoreguidelines-owning-memory`
+## Testing and Performance Evidence
 
-Additional enforcement and filtering:
-- `WarningsAsErrors` is scoped to:
-	- `bugprone-*`
-	- `performance-*`
-- `HeaderFilterRegex: 'src/|include/'`
-- `cppcoreguidelines-pro-bounds-pointer-arithmetic.IgnoreMacros: true`
+### Test Coverage in Build Graph
+`CMakeLists.txt` includes both module test sources in `stratadb_tests`:
+- `tests/memory/epoch_manager_test.cpp`
+- `tests/config/config_manager_test.cpp`
 
-## Repository Hygiene
-Generated artifacts and local machine outputs are excluded from version control via `.gitignore`, including:
-- build directories (`build/`, `out/`, `bin/`, `lib/`)
-- CMake-generated files (`CMakeFiles/`, `CMakeCache.txt`, `cmake_install.cmake`)
-- compilation database output (`compile_commands.json`)
-- local editor/cache/runtime artifacts
+This confirms both architecture docs below correspond to code with dedicated tests.
 
-## Verified Status
-- `src/`, `include/`, and `tests/` directories are present and referenced by `CMakeLists.txt`.
-- Core library and test target source paths referenced by `CMakeLists.txt` exist.
-- This document reflects current repository configuration with no known path mismatch in build target definitions.
+### Attached Perf Evidence
+From `real_perf.txt` (sampled on `stratadb_tests`):
+- `EpochManager::reclaim()` appears as a major hotspot (~22% self in report table).
+- `EpochManager::advance_epoch()` appears in top contributors (~7% self in report table).
+- `ConfigManager::update_mutable(...)` and `ConfigManager::get_mutable() const` are present in sampled hot paths.
 
-## Maintenance Guidance
-- Keep warning and sanitizer policy target-scoped.
-- Keep documentation synchronized with build-policy changes in the same pull request.
-- If linker or standard constraints change, update this document immediately to avoid configuration drift.
+## Not Verified
+- Build and test command execution in the current shell session for this update.
+- Absolute reproducibility of percentages in `real_perf.txt` on a different machine or compiler build.

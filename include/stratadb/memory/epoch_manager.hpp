@@ -21,27 +21,62 @@ class EpochManager {
   public:
     class ReadGuard {
       public:
-        explicit ReadGuard(EpochManager& mgr)
-            : mgr_(mgr) {
-            mgr_.enter();
+        explicit ReadGuard(EpochManager& mgr) noexcept
+            : mgr_(&mgr) {
+            mgr_->enter();
         }
 
-        ~ReadGuard() {
-            mgr_.leave();
+        ~ReadGuard() noexcept {
+            if (mgr_ != nullptr) {
+                mgr_->leave();
+            }
         }
+
+        ReadGuard(const ReadGuard&) = delete;
+        ReadGuard& operator=(const ReadGuard&) = delete;
+
+        // Safe move semantics: steal the pointer and hollow out the source
+        ReadGuard(ReadGuard&& other) noexcept
+            : mgr_(other.mgr_) {
+            other.mgr_ = nullptr;
+        }
+
+        // Move assignment (optional, but good practice if you implement move construction)
+        ReadGuard& operator=(ReadGuard&& other) noexcept {
+            if (this != &other) {
+                if (mgr_ != nullptr) {
+                    mgr_->leave();
+                }
+                mgr_ = other.mgr_;
+                other.mgr_ = nullptr;
+            }
+            return *this;
+        }
+
+      private:
+        EpochManager* mgr_;
+    };
+
+    class ThreadGuard {
+      public:
+        explicit ThreadGuard(EpochManager& mgr)
+            : mgr_(mgr) {
+            mgr_.register_thread();
+        }
+
+        ~ThreadGuard() noexcept {
+            mgr_.unregister_thread();
+        }
+
+        ThreadGuard(const ThreadGuard&) = delete;
+        ThreadGuard& operator=(const ThreadGuard&) = delete;
 
       private:
         EpochManager& mgr_;
     };
 
-    void register_thread();
-    void unregister_thread();
-
-    // TODO: enter and leave method will be private, and Readguad will be friend class. after we finalize the config
-    // manager
-
-    void enter() noexcept;
-    void leave() noexcept;
+    friend class ReadGuard;   // Allow ReadGuard to call private enter/leave methods
+    friend class ThreadGuard; // Allow ThreadGuard to call private register/unregister methods
 
     template <typename T>
     void retire(T* ptr) noexcept {
@@ -75,6 +110,10 @@ class EpochManager {
 
   private:
     void retire_node(void* ptr, void (*deleter)(void*)) noexcept;
+    void enter() noexcept;
+    void leave() noexcept;
+    void register_thread();
+    void unregister_thread();
 };
 
 } // namespace stratadb::memory

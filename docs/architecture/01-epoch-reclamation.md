@@ -1,146 +1,93 @@
-# Memory Reclamation via Epoch-Based Reclamation
+# Epoch Reclamation Architecture
 
 Author: Ankit Kumar
 Date: 2026-04-17
 
 ## Purpose
-Explain the implemented Epoch-Based Reclamation (EBR) design in StrataDB, including thread registration, read-side protection, deferred deletion, and reclaim behavior under concurrency.
+Document how epoch-based reclamation is implemented in StrataDB so readers can reason about thread lifecycle rules, memory safety boundaries, and reclaim behavior under contention.
 
 ## Overview
-StrataDB uses an epoch manager to defer object deletion until it is safe relative to active readers. The API is defined in [include/stratadb/memory/epoch_manager.hpp](include/stratadb/memory/epoch_manager.hpp), the behavior is implemented in [src/memory/epoch_manager.cpp](src/memory/epoch_manager.cpp), and concurrency behavior is validated through [tests/memory/epoch_manager_test.cpp](tests/memory/epoch_manager_test.cpp).
+The module implements epoch-based deferred reclamation in `EpochManager`. Threads register into fixed slots, readers publish active epochs through an RAII read guard, retired objects are appended to per-thread retire lists, and reclaim frees only objects older than the minimum active epoch.
 
 ## System Context
-
-### Public API
-`EpochManager` provides:
-- `register_thread()`
-- `unregister_thread()`
-- `enter()`
-- `leave()`
-- `retire(T* ptr)`
-- `advance_epoch()`
-- `reclaim()`
-
-It also exposes `ReadGuard`, an RAII helper that calls `enter()` on construction and `leave()` on destruction.
-
-### Core Data Model
-
-**Global epoch**
-- `global_epoch_` is `std::atomic<uint64_t>`.
-- `advance_epoch()` increments it using `fetch_add(1, std::memory_order_acq_rel)`.
-
-**Thread slots**
-- `thread_states_` is a fixed `std::array<ThreadState, 128>`.
-- Each `ThreadState` is aligned to `std::hardware_destructive_interference_size`.
-- Each slot contains:
-  - `state` (`std::atomic<uint64_t>`)
-  - `retire_list_` (`std::vector<RetireNode>`)
-  - `in_use` (`std::atomic<bool>`)
-
-**Thread-local index**
-- `thread_index_` caches each thread's slot index.
-- `INVALID_THREAD` is used to detect unregistered access.
-
-**State encoding**
-- `state == UINT64_MAX`: thread is not currently visible as an active reader.
-- `state == e` (finite epoch): thread is active in epoch `e`.
-
-**Retire nodes**
-- Each node stores:
-  - `ptr`
-  - `deleter` (`void (*)(void*)`)
-  - `retire_epoch`
-
-### Defaults and Reclaim Tuning
-From [include/stratadb/memory/epoch_manager.hpp](include/stratadb/memory/epoch_manager.hpp):
-- `MAX_THREADS = 128`
-- `RECLAIM_BATCH = 64`
-- `RECLAIM_MASK = 63`
-- `RETIRE_LIST_THRESHOLD = 10000`
+- Public API and constants: `include/stratadb/memory/epoch_manager.hpp`
+- Implementation: `src/memory/epoch_manager.cpp`
+- Unit tests: `tests/memory/epoch_manager_test.cpp`
 
 ## Components and Responsibilities
 
-### Thread Lifecycle
-- `register_thread()` atomically claims a free slot (`in_use: false -> true`) and stores the slot index in TLS.
-- Double registration on the same thread triggers assertion failure and then termination (`std::terminate()`).
-- If no slot is available, `register_thread()` throws `std::runtime_error`.
-- `unregister_thread()` marks the thread inactive (`state = UINT64_MAX`), runs `reclaim()`, clears `in_use`, and resets TLS index.
+### EpochManager
+`EpochManager` owns global epoch state and per-thread slot state.
 
-### Read Path
-- `enter()` loads `global_epoch_` (`memory_order_acquire`) and publishes it to slot `state` (`memory_order_release`).
-- `leave()` stores `UINT64_MAX` to `state` (`memory_order_release`).
-- `ReadGuard` wraps this lifecycle for scoped reads.
+Verified state model:
+- `global_epoch_`: `std::atomic<uint64_t>`
+- `thread_states_`: fixed `std::array<ThreadState, defaults::MAX_THREADS>`
+- `thread_index_`: thread-local slot index (`INVALID_THREAD` when not registered)
 
-### Retirement Path
-- `retire(T* ptr)` ignores null pointers.
-- Non-null pointers are wrapped via type-erased deleter and forwarded to `retire_node()`.
-- `retire_node()` records `retire_epoch = global_epoch_.load(memory_order_acquire)` and appends to the calling thread's `retire_list_`.
-- Periodic reclaim is attempted when `(retire_list_.size() & RECLAIM_MASK) == 0`.
-- If retire backlog exceeds `RETIRE_LIST_THRESHOLD`, the thread yields (`std::this_thread::yield()`).
+### ReadGuard
+`EpochManager::ReadGuard` calls `enter()` on construction and `leave()` on destruction. It is move-only and nulls the source on move.
 
-### Reclaim Path
-- `reclaim()` starts with `min_epoch = global_epoch_.load(memory_order_acquire)`.
-- It scans all in-use slots and reduces `min_epoch` using each active slot state (`state != UINT64_MAX`).
-- It reclaims only from the current thread's `retire_list_`.
-- A node is deletable only when `node.retire_epoch < min_epoch`.
+### ThreadGuard
+`EpochManager::ThreadGuard` calls `register_thread()` on construction and `unregister_thread()` on destruction. It is non-copyable.
+
+### RetireNode and ThreadState
+Each `ThreadState` contains:
+- `state` (`std::atomic<uint64_t>`) where `UINT64_MAX` means inactive
+- `retire_list_` (`std::vector<RetireNode>`)
+- `in_use` (`std::atomic<bool>`)
+
+`RetireNode` stores `ptr`, `deleter`, and `retire_epoch`.
+
+## Data Flow
+1. A thread enters the subsystem via `ThreadGuard`, which claims one slot.
+2. A read critical section creates `ReadGuard`, which publishes current `global_epoch_` to the slot.
+3. `retire(T*)` wraps type-specific deletion into a type-erased deleter and appends to the caller's retire list with current epoch.
+4. `advance_epoch()` increments logical time.
+5. `reclaim()` computes `min_epoch` from active thread states and frees nodes where `retire_epoch < min_epoch`.
+6. `ReadGuard` and `ThreadGuard` destructors leave the epoch and unregister thread state respectively.
 
 ## Key Design Decisions
 
-### Sentinel-Based Active Tracking
-Instead of separate `active` and `epoch` fields, the implementation uses one atomic `state` with sentinel encoding. This reduces metadata and keeps active/inactive transitions explicit.
+### Fixed Slot Capacity
+The implementation uses a fixed upper bound (`defaults::MAX_THREADS = 128`) to avoid dynamic thread metadata allocation during hot paths.
 
-### Fixed Slot Array
-A fixed-size array avoids relocation and simplifies ownership of per-thread retire lists, at the cost of a hard cap (`MAX_THREADS`).
+### Sentinel Encoding for Active State
+The thread activity marker is encoded in one atomic `state` value (`UINT64_MAX` for inactive), which keeps active/inactive transitions simple and cheap.
 
-### Thread-Local Retire Ownership
-Retire operations are lock-free with local vector append. Reclaim remains local to the owning thread, which keeps write-side contention low.
+### Per-thread Retire Lists
+Each thread retires into its own vector to avoid global retire-list lock contention.
 
-### Periodic Reclaim and Backpressure
-Batch-triggered reclaim and yield-on-growth provide simple backpressure controls to limit retire-list growth under sustained retirement rates.
+### Periodic Reclaim Trigger
+`retire_node(...)` attempts reclaim when `(retire_list_.size() & defaults::RECLAIM_MASK) == 0`, and yields if list size exceeds `defaults::RETIRE_LIST_THRESHOLD`.
 
 ## Trade-offs and Constraints
+- Hard cap on concurrently registered threads (`128`).
+- Reclamation latency depends on readers progressing and leaving their read sections.
+- Reclaim scans all slots, so slot count affects reclaim cost.
+- Correctness depends on using `ThreadGuard`/`register_thread()` before API calls that assume a valid slot.
 
-### What This Design Optimizes
-- Low-overhead read entry/exit.
-- Cheap retirement path via per-thread vectors.
-- Deterministic safety condition for deletion (`retire_epoch < min_epoch`).
+## Testing and Performance Evidence
 
-### Costs and Constraints
-- Hard thread limit of 128 concurrent registered threads.
-- Correctness depends on callers respecting register/enter/leave/unregister lifecycle.
-- A stalled active reader can delay reclamation progress.
-- Reclaim is local to the calling thread's retire list, so cleanup cadence depends on thread behavior.
+### Test Evidence
+`tests/memory/epoch_manager_test.cpp` includes dedicated tests for:
+- Single-thread reclaim correctness
+- Deferred deletion while a reader remains active
+- Contention stress (`TSANStress`)
+- Batching behavior
+- Epoch stall behavior
+- Thread slot reuse
+- Multi-epoch reclaim
+- Reclaim idempotence
 
-## Validation Results
+### Perf Evidence from Attached Profile
+`perf` shows `stratadb_tests` samples that include epoch manager hotspots:
+- `stratadb::memory::EpochManager::reclaim()` is one of the largest self-time contributors in the report.
+- `stratadb::memory::EpochManager::advance_epoch()` appears among the highest sampled symbols.
+- `stratadb::memory::EpochManager::retire_node(void*, void (*)(void*))` and retire deleter paths are present.
 
-### Local test execution (2026-04-17)
-Verified from [tests/memory/epoch_manager_test.cpp](tests/memory/epoch_manager_test.cpp):
-
-- `ctest --output-on-failure` from build directory:
-  - 8/8 tests passed
-  - Total real time: `1.09 sec`
-- `TSAN_OPTIONS="halt_on_error=1" ./epoch_manager_tests`:
-  - 8/8 tests passed
-  - Suite runtime: `828 ms`
-- `ctest -R DeferredDeletion --output-on-failure`:
-  - 1/1 test passed
-  - Total real time: `0.02 sec`
-
-### Behaviors covered by tests
-- Single-thread reclamation correctness.
-- Deferred deletion while another reader pins an epoch.
-- High-concurrency stress behavior.
-- Reclaim behavior under stalled reader conditions.
-- Thread slot reuse under repeated register/unregister cycles.
-- Multi-epoch reclaim and reclaim idempotence.
+This aligns with stress-heavy tests that repeatedly retire, advance epochs, and reclaim.
 
 ## Not Verified
-- Long-duration memory footprint behavior under production-scale load.
-- Throughput/latency benchmarks against alternative reclamation designs.
-- End-to-end engine call paths that invoke epoch APIs outside unit tests.
-
-## Usage Implications
-- Register each participating thread before using epoch APIs.
-- Prefer `ReadGuard` where scoped read safety is needed.
-- Keep read critical sections short to avoid reclaim stalls.
-- Call `advance_epoch()` and `reclaim()` regularly on retirement-heavy paths.
+- Production workload behavior beyond the provided tests.
+- Throughput comparison against alternate reclamation strategies.
+- Reproducibility of attached profile percentages across different machines and compiler settings.

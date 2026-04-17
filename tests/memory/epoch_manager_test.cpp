@@ -23,23 +23,22 @@ TEST(EpochManagerTest, SingleThreadedReclaim) {
     EpochManager mgr;
     Dummy::destructions.store(0);
 
-    mgr.register_thread();
+    EpochManager::ThreadGuard tg(mgr);
 
     auto* obj = new Dummy();
 
-    mgr.enter();
-    mgr.retire(obj);
-    mgr.leave();
+    {
+        EpochManager::ReadGuard guard(mgr);
+        mgr.retire(obj);
+    }
 
     mgr.advance_epoch();
     mgr.reclaim();
 
     ASSERT_EQ(Dummy::destructions.load(), 1);
-
-    mgr.unregister_thread();
 }
 
-// Test 2: Deferred deletion (deterministic, no sleeps)
+// Test 2: Deferred deletion
 TEST(EpochManagerTest, DeferredDeletion) {
     EpochManager mgr;
     Dummy::destructions.store(0);
@@ -49,23 +48,22 @@ TEST(EpochManagerTest, DeferredDeletion) {
     std::atomic<bool> a_left{false};
 
     std::jthread threadA([&] {
-        mgr.register_thread();
+        EpochManager::ThreadGuard tg(mgr);
 
-        mgr.enter(); // pins old epoch
-        a_ready.store(true, std::memory_order_release);
+        {
+            EpochManager::ReadGuard guard(mgr);
+            a_ready.store(true, std::memory_order_release);
 
-        while (!a_can_leave.load(std::memory_order_acquire)) {
-            std::this_thread::yield();
+            while (!a_can_leave.load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
         }
 
-        mgr.leave();
         a_left.store(true, std::memory_order_release);
-
-        mgr.unregister_thread();
     });
 
     std::jthread threadB([&] {
-        mgr.register_thread();
+        EpochManager::ThreadGuard tg(mgr);
 
         while (!a_ready.load(std::memory_order_acquire)) {
             std::this_thread::yield();
@@ -75,10 +73,8 @@ TEST(EpochManagerTest, DeferredDeletion) {
 
         mgr.advance_epoch();
         mgr.retire(obj);
-
         mgr.reclaim();
 
-        // Must NOT reclaim yet (A still active)
         ASSERT_EQ(Dummy::destructions.load(), 0);
 
         a_can_leave.store(true, std::memory_order_release);
@@ -87,17 +83,14 @@ TEST(EpochManagerTest, DeferredDeletion) {
             std::this_thread::yield();
         }
 
-        mgr.advance_epoch(); // ensure epoch separation
+        mgr.advance_epoch();
         mgr.reclaim();
 
-        // Now safe
         ASSERT_EQ(Dummy::destructions.load(), 1);
-
-        mgr.unregister_thread();
     });
 }
 
-// Test 3: TSAN stress test (high concurrency)
+// Test 3: TSAN stress (REAL contention)
 TEST(EpochManagerTest, TSANStress) {
     EpochManager mgr;
     Dummy::destructions.store(0);
@@ -111,25 +104,20 @@ TEST(EpochManagerTest, TSANStress) {
     // Readers
     for (int i = 0; i < NUM_READERS; ++i) {
         threads.emplace_back([&] {
-            mgr.register_thread();
+            EpochManager::ThreadGuard tg(mgr);
 
             for (int j = 0; j < 10000; ++j) {
-                mgr.enter();
-
+                EpochManager::ReadGuard guard(mgr);
                 volatile int x = j * j;
                 (void)x;
-
-                mgr.leave();
             }
-
-            mgr.unregister_thread();
         });
     }
 
-    // Writers
+    // Writers (FIXED)
     for (int i = NUM_READERS; i < NUM_THREADS; ++i) {
         threads.emplace_back([&] {
-            mgr.register_thread();
+            EpochManager::ThreadGuard tg(mgr);
 
             for (int j = 0; j < 10000; ++j) {
                 mgr.advance_epoch();
@@ -137,38 +125,33 @@ TEST(EpochManagerTest, TSANStress) {
                 auto* obj = new Dummy();
                 mgr.retire(obj);
 
-                // Occasionally reclaim to build backlog
                 if ((j & 7) == 0) {
                     mgr.reclaim();
                 }
             }
-
-            mgr.unregister_thread();
         });
     }
 
-    // Force join (jthread destructor)
     threads.clear();
 
-    // Final sweep
-    mgr.register_thread();
+    {
+        EpochManager::ThreadGuard tg(mgr);
 
-    mgr.advance_epoch();
-    mgr.advance_epoch(); // ensure all nodes are reclaimable
-    mgr.reclaim();
+        mgr.advance_epoch();
+        mgr.advance_epoch();
+        mgr.reclaim();
 
-    ASSERT_GT(Dummy::destructions.load(), 0);
-
-    mgr.unregister_thread();
+        ASSERT_GT(Dummy::destructions.load(), 0);
+    }
 }
 
+// Test 4: Batching
 TEST(EpochManagerTest, BatchingBehavior) {
     EpochManager mgr;
     Dummy::destructions.store(0);
 
-    mgr.register_thread();
+    EpochManager::ThreadGuard tg(mgr);
 
-    // Retire less than batch size
     for (int i = 0; i < 63; ++i) {
         mgr.retire(new Dummy());
     }
@@ -176,12 +159,10 @@ TEST(EpochManagerTest, BatchingBehavior) {
     mgr.advance_epoch();
     mgr.reclaim();
 
-    // Nothing should be reclaimed yet (depends on batching)
-    ASSERT_EQ(Dummy::destructions.load(), 63); // because we forced reclaim manually
-
-    mgr.unregister_thread();
+    ASSERT_EQ(Dummy::destructions.load(), 63);
 }
 
+// Test 5: Epoch stall
 TEST(EpochManagerTest, EpochStallPreventsReclaim) {
     EpochManager mgr;
     Dummy::destructions.store(0);
@@ -189,18 +170,17 @@ TEST(EpochManagerTest, EpochStallPreventsReclaim) {
     std::atomic<bool> reader_ready{false};
 
     std::jthread reader([&] {
-        mgr.register_thread();
-        mgr.enter(); // never leaves
+        EpochManager::ThreadGuard tg(mgr);
 
-        reader_ready.store(true, std::memory_order_release);
-
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        mgr.leave();
-        mgr.unregister_thread();
+        {
+            EpochManager::ReadGuard guard(mgr);
+            reader_ready.store(true, std::memory_order_release);
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
     });
 
     std::jthread writer([&] {
-        mgr.register_thread();
+        EpochManager::ThreadGuard tg(mgr);
 
         while (!reader_ready.load(std::memory_order_acquire)) {
         }
@@ -209,69 +189,63 @@ TEST(EpochManagerTest, EpochStallPreventsReclaim) {
 
         mgr.advance_epoch();
         mgr.retire(obj);
-
         mgr.reclaim();
 
-        // Should NOT reclaim because reader is stuck
         ASSERT_EQ(Dummy::destructions.load(), 0);
-
-        mgr.unregister_thread();
     });
 }
 
+// Test 6: Thread slot reuse
 TEST(EpochManagerTest, ThreadSlotReuse) {
     EpochManager mgr;
 
     for (int i = 0; i < 1000; ++i) {
         std::jthread t([&] {
-            mgr.register_thread();
-            mgr.enter();
-            mgr.leave();
-            mgr.unregister_thread();
+            EpochManager::ThreadGuard tg(mgr);
+            EpochManager::ReadGuard guard(mgr);
         });
     }
 
     SUCCEED();
 }
 
+// Test 7: Multi-epoch reclaim
 TEST(EpochManagerTest, MultiEpochReclaim) {
     EpochManager mgr;
     Dummy::destructions.store(0);
 
-    mgr.register_thread();
+    EpochManager::ThreadGuard tg(mgr);
 
     for (int i = 0; i < 100; ++i) {
-        mgr.enter();
-        mgr.retire(new Dummy());
-        mgr.leave();
-
+        {
+            EpochManager::ReadGuard guard(mgr);
+            mgr.retire(new Dummy());
+        }
         mgr.advance_epoch();
     }
 
     mgr.reclaim();
 
     ASSERT_EQ(Dummy::destructions.load(), 100);
-
-    mgr.unregister_thread();
 }
 
+// Test 8: Idempotent reclaim
 TEST(EpochManagerTest, ReclaimIdempotent) {
     EpochManager mgr;
     Dummy::destructions.store(0);
 
-    mgr.register_thread();
+    EpochManager::ThreadGuard tg(mgr);
 
     auto* obj = new Dummy();
 
-    mgr.enter();
-    mgr.retire(obj);
-    mgr.leave();
+    {
+        EpochManager::ReadGuard guard(mgr);
+        mgr.retire(obj);
+    }
 
     mgr.advance_epoch();
     mgr.reclaim();
-    mgr.reclaim(); // second call should do nothing
+    mgr.reclaim();
 
     ASSERT_EQ(Dummy::destructions.load(), 1);
-
-    mgr.unregister_thread();
 }
