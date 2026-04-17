@@ -1,150 +1,146 @@
 # Memory Reclamation via Epoch-Based Reclamation
 
 Author: Ankit Kumar
-Date: 2026-04-16
+Date: 2026-04-17
 
 ## Purpose
-Explain how StrataDB safely reclaims memory in highly concurrent scenarios where readers and writers operate simultaneously, and why this mechanism was chosen over alternatives.
+Explain the implemented Epoch-Based Reclamation (EBR) design in StrataDB, including thread registration, read-side protection, deferred deletion, and reclaim behavior under concurrency.
 
 ## Overview
-StrataDB provides lock-free memory reclamation through an **Epoch-Based Reclamation (EBR)** manager. This mechanism allows threads to retire memory (request deletion) and safely reclaim it once all active readers have moved to a new epoch. The implementation prioritizes lightweight read paths and is located in [include/stratadb/memory/epoch_manager.hpp](include/stratadb/memory/epoch_manager.hpp).
+StrataDB uses an epoch manager to defer object deletion until it is safe relative to active readers. The API is defined in [include/stratadb/memory/epoch_manager.hpp](include/stratadb/memory/epoch_manager.hpp), the behavior is implemented in [src/memory/epoch_manager.cpp](src/memory/epoch_manager.cpp), and concurrency behavior is validated through [tests/memory/epoch_manager_test.cpp](tests/memory/epoch_manager_test.cpp).
 
 ## System Context
 
 ### Public API
-The `EpochManager` class provides these operations:
+`EpochManager` provides:
+- `register_thread()`
+- `unregister_thread()`
+- `enter()`
+- `leave()`
+- `retire(T* ptr)`
+- `advance_epoch()`
+- `reclaim()`
 
-- `register_thread()`: Called by a new thread on startup to allocate its slot.
-- `unregister_thread()`: Called by a thread on shutdown to release its slot.
-- `enter()`: Called when a thread begins a critical read section.
-- `leave()`: Called when a thread exits a critical read section.
-- `retire(T* ptr)`: Type-safe API to defer deletion of a pointer.
-- `advance_epoch()`: Called to increment the global epoch and begin garbage collection.
-- `reclaim()`: Called to actually reclaim retired memory.
+It also exposes `ReadGuard`, an RAII helper that calls `enter()` on construction and `leave()` on destruction.
 
-### Data Structures
+### Core Data Model
 
-**Global Epoch Counter** (`global_epoch_`)
-- Type: `std::atomic<uint64_t>`.
-- Only incremented by `advance_epoch()`.
-- Synchronizes visibility of retirements across threads.
+**Global epoch**
+- `global_epoch_` is `std::atomic<uint64_t>`.
+- `advance_epoch()` increments it using `fetch_add(1, std::memory_order_acq_rel)`.
 
-**Thread States Array** (`thread_states_`)
-- Type: `std::array<ThreadState, 128>`.
-- Fixed size of 128 threads; hardcoded to match typical concurrent workloads.
-- Each element is aligned to `std::hardware_destructive_interference_size` (64 bytes on x86-64).
+**Thread slots**
+- `thread_states_` is a fixed `std::array<ThreadState, 128>`.
+- Each `ThreadState` is aligned to `std::hardware_destructive_interference_size`.
+- Each slot contains:
+  - `state` (`std::atomic<uint64_t>`)
+  - `retire_list_` (`std::vector<RetireNode>`)
+  - `in_use` (`std::atomic<bool>`)
 
-**Thread-Local Index** (`thread_index_`)
-- Type: `thread_local std::size_t`.
-- Each thread caches its own slot index to avoid repeated array lookups.
-- Initialized to `INVALID_THREAD` (maximum size_t) for detection of unregistered threads.
+**Thread-local index**
+- `thread_index_` caches each thread's slot index.
+- `INVALID_THREAD` is used to detect unregistered access.
 
-**Thread State Structure**
-- `epoch`: Current epoch observed by this thread.
-- `active`: Boolean flag indicating if the thread is in a critical section.
-- `retire_list_`: Vector of retired pointers awaiting reclamation.
-- `in_use`: Boolean flag indicating if this thread slot is currently allocated.
+**State encoding**
+- `state == UINT64_MAX`: thread is not currently visible as an active reader.
+- `state == e` (finite epoch): thread is active in epoch `e`.
 
-**Retirement Nodes** (`RetireNode`)
-- `ptr`: The pointer to be deleted.
-- `deleter`: Function pointer to a type-erased deleter (`void (*)(void*)`).
-- `retire_epoch`: The global epoch at the time of retirement.
+**Retire nodes**
+- Each node stores:
+  - `ptr`
+  - `deleter` (`void (*)(void*)`)
+  - `retire_epoch`
 
-## Design Decisions and Tradeoffs
+### Defaults and Reclaim Tuning
+From [include/stratadb/memory/epoch_manager.hpp](include/stratadb/memory/epoch_manager.hpp):
+- `MAX_THREADS = 128`
+- `RECLAIM_BATCH = 64`
+- `RECLAIM_MASK = 63`
+- `RETIRE_LIST_THRESHOLD = 10000`
 
-### Decision 1: Epoch-Based Reclamation vs. Alternatives
+## Components and Responsibilities
 
-**EBR (Chosen)**
-- Read path cost: Two atomic operations (`load` and `store`) with acquire/release semantics.
-- Write path cost: Each retirement appends to a thread-local vector.
-- Garbage collection: Blocked until all threads have observed a newer epoch.
-- **Rationale**: Minimizes latency on the hot read path. Readers do not traverse pointers or inspect addresses; they simply announce their epoch and proceed.
+### Thread Lifecycle
+- `register_thread()` atomically claims a free slot (`in_use: false -> true`) and stores the slot index in TLS.
+- Double registration on the same thread triggers assertion failure and then termination (`std::terminate()`).
+- If no slot is available, `register_thread()` throws `std::runtime_error`.
+- `unregister_thread()` marks the thread inactive (`state = UINT64_MAX`), runs `reclaim()`, clears `in_use`, and resets TLS index.
 
-**What was not chosen:**
-- Hazard Pointers: Require readers to publish exact memory addresses being accessed, adding full sequential consistency barriers to every pointer traversal.
-- Reference Counting (e.g., `std::shared_ptr`): Atomic increment/decrement on every access; worse cache behavior and higher synchronization overhead.
-- Manual Memory Management: Risk of Use-After-Free in concurrent scenarios.
+### Read Path
+- `enter()` loads `global_epoch_` (`memory_order_acquire`) and publishes it to slot `state` (`memory_order_release`).
+- `leave()` stores `UINT64_MAX` to `state` (`memory_order_release`).
+- `ReadGuard` wraps this lifecycle for scoped reads.
 
-### Decision 2: Fixed Thread Array vs. Dynamic Scaling
+### Retirement Path
+- `retire(T* ptr)` ignores null pointers.
+- Non-null pointers are wrapped via type-erased deleter and forwarded to `retire_node()`.
+- `retire_node()` records `retire_epoch = global_epoch_.load(memory_order_acquire)` and appends to the calling thread's `retire_list_`.
+- Periodic reclaim is attempted when `(retire_list_.size() & RECLAIM_MASK) == 0`.
+- If retire backlog exceeds `RETIRE_LIST_THRESHOLD`, the thread yields (`std::this_thread::yield()`).
 
-**Fixed Array of 128 (Chosen)**
-- Memory layout is stable; no reallocation.
-- Thread slot addresses are known at compile-time.
-- Concurrent slot updates do not invalidate memory.
-- **Hard limit**: Only 128 threads can be registered simultaneously.
+### Reclaim Path
+- `reclaim()` starts with `min_epoch = global_epoch_.load(memory_order_acquire)`.
+- It scans all in-use slots and reduces `min_epoch` using each active slot state (`state != UINT64_MAX`).
+- It reclaims only from the current thread's `retire_list_`.
+- A node is deletable only when `node.retire_epoch < min_epoch`.
 
-**Why not dynamic?**
-- Reallocation invalidates memory addresses, leading to Use-After-Free bugs in a lock-free system.
-- 128 threads is sufficient for most storage layer workloads; context-switching overhead dominates beyond this point on typical hardware.
+## Key Design Decisions
 
-### Decision 3: Thread-Local Caching vs. Global Lookup
+### Sentinel-Based Active Tracking
+Instead of separate `active` and `epoch` fields, the implementation uses one atomic `state` with sentinel encoding. This reduces metadata and keeps active/inactive transitions explicit.
 
-**Thread-Local Index (Chosen)**
-- Each thread caches `thread_index_` in thread-local storage.
-- Array access is O(1) without map lookups or hashing.
-- No synchronization required for thread to find its own slot.
+### Fixed Slot Array
+A fixed-size array avoids relocation and simplifies ownership of per-thread retire lists, at the cost of a hard cap (`MAX_THREADS`).
 
-**Why not a global lookup?**
-- Hash map or std::map lookup adds latency to every enter/leave call.
-- Lock contention on a global map would serialize the fast path.
+### Thread-Local Retire Ownership
+Retire operations are lock-free with local vector append. Reclaim remains local to the owning thread, which keeps write-side contention low.
 
-### Decision 4: Cache-Line Alignment for ThreadState
+### Periodic Reclaim and Backpressure
+Batch-triggered reclaim and yield-on-growth provide simple backpressure controls to limit retire-list growth under sustained retirement rates.
 
-**Alignment to `hardware_destructive_interference_size` (Chosen)**
-- ThreadState structures are 64-byte aligned on x86-64.
-- Concurrent updates to adjacent thread epochs do not cause L1 cache line bouncing.
-- Eliminates false sharing between independent threads.
+## Trade-offs and Constraints
 
-**Impact**: Multiple threads can call `enter()` and `leave()` simultaneously on different cores without triggering unnecessary cache invalidations.
+### What This Design Optimizes
+- Low-overhead read entry/exit.
+- Cheap retirement path via per-thread vectors.
+- Deterministic safety condition for deletion (`retire_epoch < min_epoch`).
 
-### Decision 5: Type-Erased Deletion
+### Costs and Constraints
+- Hard thread limit of 128 concurrent registered threads.
+- Correctness depends on callers respecting register/enter/leave/unregister lifecycle.
+- A stalled active reader can delay reclamation progress.
+- Reclaim is local to the calling thread's retire list, so cleanup cadence depends on thread behavior.
 
-**Template with Function Pointer (Chosen)**
-- `retire<T>()` is a template that captures `delete` of type `T`.
-- Type information is erased into `void (*)(void*)` at call site.
-- No virtual destructors or RTTI required.
+## Validation Results
 
-**Why this approach?**
-- Avoids vtable overhead and pointer-chasing in deferred deletion.
-- Type safety at retirement time, but memory-efficient storage.
+### Local test execution (2026-04-17)
+Verified from [tests/memory/epoch_manager_test.cpp](tests/memory/epoch_manager_test.cpp):
 
-### Decision 6: Thread-Local Retire Queues vs. Global Queue
+- `ctest --output-on-failure` from build directory:
+  - 8/8 tests passed
+  - Total real time: `1.09 sec`
+- `TSAN_OPTIONS="halt_on_error=1" ./epoch_manager_tests`:
+  - 8/8 tests passed
+  - Suite runtime: `828 ms`
+- `ctest -R DeferredDeletion --output-on-failure`:
+  - 1/1 test passed
+  - Total real time: `0.02 sec`
 
-**Thread-Local Vectors (Chosen)**
-- Each thread appends directly to its own `retire_list_` without synchronization.
-- No CAS (Compare-And-Swap) loops or atomic contention on retirement.
-
-**Tradeoff**:
-- If a thread exits without calling `reclaim()`, its retired memory remains in its retire list.
-- Mitigation: Long-lived threads (writers, compactors) must periodically call `reclaim()` to avoid accumulation.
-
-**Why not a global MPSC queue?**
-- Would require lock-free queue operations (atomic CAS) on every retirement.
-- Adds contention to the write path.
-
-## Behavioral Constraints
-
-### Critical Section Scoping
-- `enter()` announces thread presence in current epoch.
-- `leave()` announces thread departure.
-- **Critical constraint**: A stalled thread (e.g., preempted by OS) blocks garbage collection from advancing multiple epochs.
-- **Mitigation**: Critical sections must be short and non-blocking.
-
-### Epoch Advancement Dependency
-- Memory is only reclaimed after **all threads** have left a prior epoch.
-- If even one thread remains in an older epoch, garbage from that epoch cannot be reclaimed.
-- `reclaim()` should be called regularly by writer/compaction threads to trigger cleanup.
-
-### Retirement Semantics
-- `retire(ptr)` does not immediately delete; it queues the deletion.
-- Caller is responsible for ensuring `ptr` is no longer reachable before retirement.
+### Behaviors covered by tests
+- Single-thread reclamation correctness.
+- Deferred deletion while another reader pins an epoch.
+- High-concurrency stress behavior.
+- Reclaim behavior under stalled reader conditions.
+- Thread slot reuse under repeated register/unregister cycles.
+- Multi-epoch reclaim and reclaim idempotence.
 
 ## Not Verified
-- Exact timing and synchronization semantics of `enter()`, `leave()`, `advance_epoch()`, and `reclaim()` implementations (not present in header).
-- Specific memory usage under high contention or thread churn.
-- Performance numbers under concurrent load.
+- Long-duration memory footprint behavior under production-scale load.
+- Throughput/latency benchmarks against alternative reclamation designs.
+- End-to-end engine call paths that invoke epoch APIs outside unit tests.
 
-## Implications for Usage
-- Lock-free readers can call `enter()` and `leave()` with minimal overhead.
-- Writers should batch retirements and periodically call `reclaim()`.
-- System should avoid patterns where a thread enters a critical section and stalls indefinitely (e.g., blocking I/O inside a critical section).
+## Usage Implications
+- Register each participating thread before using epoch APIs.
+- Prefer `ReadGuard` where scoped read safety is needed.
+- Keep read critical sections short to avoid reclaim stalls.
+- Call `advance_epoch()` and `reclaim()` regularly on retirement-heavy paths.

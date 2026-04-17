@@ -10,6 +10,11 @@ CMakeCache.txt
 cmake_install.cmake
 compile_commands.json
 
+#Testing
+test_output/
+Testing/
+
+
 # Tooling
 .cache/
 .clangd/

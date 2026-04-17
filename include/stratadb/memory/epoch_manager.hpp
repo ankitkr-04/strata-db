@@ -11,13 +11,34 @@ namespace stratadb::memory {
 
 namespace defaults {
 constexpr std::size_t MAX_THREADS = 128;
+constexpr std::size_t RECLAIM_BATCH = 64;
+constexpr std::size_t RECLAIM_MASK = RECLAIM_BATCH - 1;
+constexpr std::size_t RETIRE_LIST_THRESHOLD = 10000;
 
 } // namespace defaults
 
 class EpochManager {
   public:
+    class ReadGuard {
+      public:
+        explicit ReadGuard(EpochManager& mgr)
+            : mgr_(mgr) {
+            mgr_.enter();
+        }
+
+        ~ReadGuard() {
+            mgr_.leave();
+        }
+
+      private:
+        EpochManager& mgr_;
+    };
+
     void register_thread();
     void unregister_thread();
+
+    // TODO: enter and leave method will be private, and Readguad will be friend class. after we finalize the config
+    // manager
 
     void enter() noexcept;
     void leave() noexcept;
@@ -40,11 +61,8 @@ class EpochManager {
     };
 
     struct alignas(std::hardware_destructive_interference_size) ThreadState {
-        std::atomic<uint64_t> epoch{0};
-        std::atomic<bool> active{false};
-
+        std::atomic<uint64_t> state{UINT64_MAX};
         std::vector<RetireNode> retire_list_;
-
         std::atomic<bool> in_use{false};
     };
 
