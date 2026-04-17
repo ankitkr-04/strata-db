@@ -9,9 +9,6 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# ------------------ Linker ------------------
-add_link_options(-fuse-ld=mold)
-
 # ------------------ Options ------------------
 option(STRATADB_ENABLE_ASAN "Enable AddressSanitizer" OFF)
 option(STRATADB_ENABLE_UBSAN "Enable UBSan" OFF)
@@ -19,9 +16,9 @@ option(STRATADB_ENABLE_TSAN "Enable ThreadSanitizer" OFF)
 option(STRATADB_ENABLE_LTO "Enable LTO" OFF)
 
 # ------------------ Strict Warnings ------------------
-add_library(stratadb_strict_warnings INTERFACE)
+add_library(stratadb_warnings INTERFACE)
 
-target_compile_options(stratadb_strict_warnings INTERFACE
+target_compile_options(stratadb_warnings INTERFACE
   -Wall
   -Wextra
   -Wpedantic
@@ -32,11 +29,31 @@ target_compile_options(stratadb_strict_warnings INTERFACE
   -Wold-style-cast
   -Wcast-align
   -Werror
+  -Wno-interference-size
 )
+
+# ------------------ Sanitizer Helper ------------------
+function(enable_sanitizers target)
+  if(STRATADB_ENABLE_ASAN)
+    target_compile_options(${target} PRIVATE -fsanitize=address)
+    target_link_options(${target} PRIVATE -fsanitize=address)
+  endif()
+
+  if(STRATADB_ENABLE_UBSAN)
+    target_compile_options(${target} PRIVATE -fsanitize=undefined)
+    target_link_options(${target} PRIVATE -fsanitize=undefined)
+  endif()
+
+  if(STRATADB_ENABLE_TSAN)
+    target_compile_options(${target} PRIVATE -fsanitize=thread)
+    target_link_options(${target} PRIVATE -fsanitize=thread)
+  endif()
+endfunction()
 
 # ------------------ Core Library ------------------
 add_library(stratadb STATIC
   src/memory/epoch_manager.cpp
+  src/config/config_manager.cpp
 )
 
 target_include_directories(stratadb
@@ -44,40 +61,25 @@ target_include_directories(stratadb
   PRIVATE src
 )
 
-target_link_libraries(stratadb PRIVATE stratadb_strict_warnings)
+target_link_options(stratadb PRIVATE -fuse-ld=mold)
+
+target_link_libraries(stratadb PRIVATE stratadb_warnings)
 
 target_compile_features(stratadb PUBLIC cxx_std_26)
 
-# ------------------ Sanitizers (Library) ------------------
-if(STRATADB_ENABLE_ASAN)
-  target_compile_options(stratadb PRIVATE -fsanitize=address)
-  target_link_options(stratadb PRIVATE -fsanitize=address)
-endif()
-
-if(STRATADB_ENABLE_UBSAN)
-  target_compile_options(stratadb PRIVATE -fsanitize=undefined)
-  target_link_options(stratadb PRIVATE -fsanitize=undefined)
-endif()
-
-if(STRATADB_ENABLE_TSAN)
-  target_compile_options(stratadb PRIVATE -fsanitize=thread)
-  target_link_options(stratadb PRIVATE -fsanitize=thread)
-endif()
+enable_sanitizers(stratadb)
 
 # ------------------ LTO ------------------
 if(STRATADB_ENABLE_LTO)
   set_property(TARGET stratadb PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
 endif()
 
-# ==========================================================
 # ======================= TESTING ===========================
-# ==========================================================
 
 enable_testing()
 
 include(FetchContent)
 
-# Avoid installing gtest
 set(INSTALL_GTEST OFF)
 
 FetchContent_Declare(
@@ -85,41 +87,29 @@ FetchContent_Declare(
   URL https://github.com/google/googletest/releases/download/v1.17.0/googletest-1.17.0.tar.gz
 )
 
-# Prevent CRT override (important on some platforms)
 set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 
 FetchContent_MakeAvailable(googletest)
 
 # ------------------ Test Executable ------------------
-add_executable(epoch_manager_tests
+add_executable(stratadb_tests
   tests/memory/epoch_manager_test.cpp
+  tests/config/config_manager_test.cpp
 )
 
-target_link_libraries(epoch_manager_tests
+target_link_libraries(stratadb_tests
   PRIVATE
     stratadb
     GTest::gtest_main
-    stratadb_strict_warnings
+    stratadb_warnings
 )
+target_link_options(stratadb_tests PRIVATE -fuse-ld=mold)
 
-target_compile_features(epoch_manager_tests PUBLIC cxx_std_26)
 
-# ------------------ Sanitizers (Tests) ------------------
-if(STRATADB_ENABLE_ASAN)
-  target_compile_options(epoch_manager_tests PRIVATE -fsanitize=address)
-  target_link_options(epoch_manager_tests PRIVATE -fsanitize=address)
-endif()
+target_compile_features(stratadb_tests PUBLIC cxx_std_26)
 
-if(STRATADB_ENABLE_UBSAN)
-  target_compile_options(epoch_manager_tests PRIVATE -fsanitize=undefined)
-  target_link_options(epoch_manager_tests PRIVATE -fsanitize=undefined)
-endif()
-
-if(STRATADB_ENABLE_TSAN)
-  target_compile_options(epoch_manager_tests PRIVATE -fsanitize=thread)
-  target_link_options(epoch_manager_tests PRIVATE -fsanitize=thread)
-endif()
+enable_sanitizers(stratadb_tests)
 
 # ------------------ Register Tests ------------------
 include(GoogleTest)
-gtest_discover_tests(epoch_manager_tests)
+gtest_discover_tests(stratadb_tests)
