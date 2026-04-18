@@ -1,5 +1,7 @@
 #pragma once
 
+#include "stratadb/config/memory_policy.hpp"
+
 #include <cstddef>
 #include <string>
 
@@ -13,6 +15,8 @@ inline constexpr const char* WAL_DIRECTORY = "./wal";
 struct ImmutableConfig {
     std::size_t block_size{defaults::BLOCK_SIZE};
     std::string wal_directory{defaults::WAL_DIRECTORY};
+
+    MemoryConfig memory_config{};
 };
 
 } // namespace stratadb::config
