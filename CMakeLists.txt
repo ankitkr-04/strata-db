@@ -29,8 +29,14 @@ target_compile_options(stratadb_warnings INTERFACE
   -Wold-style-cast
   -Wcast-align
   -Werror
-  -Wno-interference-size
 )
+
+# Compiler-specific flags
+if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  target_compile_options(stratadb_warnings INTERFACE
+    -Wno-interference-size
+  )
+endif()
 
 # ------------------ Sanitizer Helper ------------------
 function(enable_sanitizers target)
@@ -101,12 +107,32 @@ target_link_libraries(stratadb_tests
   PRIVATE
     stratadb
     GTest::gtest_main
-    stratadb_warnings
 )
+
 target_link_options(stratadb_tests PRIVATE -fuse-ld=mold)
 
-
 target_compile_features(stratadb_tests PUBLIC cxx_std_26)
+
+# Apply strict warnings ONLY to your test code (not gtest)
+target_compile_options(stratadb_tests PRIVATE
+  -Wall
+  -Wextra
+  -Wpedantic
+  -Wconversion
+  -Wsign-conversion
+  -Wshadow
+  -Wnon-virtual-dtor
+  -Wold-style-cast
+  -Wcast-align
+  -Werror
+)
+
+# Compiler-specific for tests
+if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  target_compile_options(stratadb_tests PRIVATE
+    -Wno-interference-size
+  )
+endif()
 
 enable_sanitizers(stratadb_tests)
 
