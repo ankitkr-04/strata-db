@@ -1,43 +1,55 @@
 #pragma once
+#include "stratadb/config/memory_policy.hpp"
 
 #include <atomic>
 #include <cstddef>
-#include <memory>
+#include <cstdint>
+#include <expected>
+#include <new>
+#include <span>
 
 namespace stratadb::memory {
-
-namespace defaults {
-inline constexpr std::size_t ARENA_BLOCK_SIZE = 2ULL * 1024 * 1024;
-}
+enum class ArenaError : uint8_t {
+    MmapFailed,
+    OutOfMemory, // ENOMEM
+    MbindFailed,
+    MunmapFailed,
+};
 
 class Arena {
   public:
-    Arena();
-    ~Arena();
+    [[nodiscard]] static auto create(const config::MemoryConfig& config) noexcept -> std::expected<Arena, ArenaError>;
 
+    ~Arena() noexcept;
     Arena(const Arena&) = delete;
     Arena& operator=(const Arena&) = delete;
-    Arena(Arena&&) = delete;
-    Arena& operator=(Arena&&) = delete;
+    Arena(Arena&& other) noexcept;
+    Arena& operator=(Arena&& other) noexcept;
 
-    void* allocate(std::size_t bytes, std::size_t alignment = alignof(std::max_align_t));
+    [[nodiscard]] auto allocate_block(std::size_t min_size) noexcept -> std::span<std::byte>;
 
-    [[nodiscard]] std::size_t memory_used() const noexcept {
-        return memory_used_.load(std::memory_order_relaxed);
+    void reset() noexcept;
+
+    [[nodiscard]] auto capacity() const noexcept -> std::size_t {
+        return config_.total_budget_bytes;
+    };
+    [[nodiscard]] auto tlab_size() const noexcept -> std::size_t {
+        return config_.tlab_size_bytes;
+    };
+
+    [[nodiscard]] auto memory_used() const noexcept -> std::size_t {
+        return offset_.load(std::memory_order_relaxed);
     }
 
   private:
-    struct Block {
-        std::unique_ptr<std::byte[]> data;
-        std::atomic<std::size_t> offset{0};
-        std::atomic<Block*> next{nullptr};
+    // base must be page-aligned and size >= config.total_budget_bytes
+    explicit Arena(std::byte* base, const config::MemoryConfig& config) noexcept;
 
-        Block()
-            : data(std::make_unique<std::byte[]>(defaults::ARENA_BLOCK_SIZE)) {}
-    };
+  private:
+    std::byte* base_{nullptr};
+    config::MemoryConfig config_{};
 
-    std::atomic<Block*> current_block_;
-    std::atomic<std::size_t> memory_used_{0};
+    alignas(std::hardware_destructive_interference_size) std::atomic<std::size_t> offset_{0};
 };
 
 } // namespace stratadb::memory
