@@ -1,6 +1,7 @@
 #pragma once
 #include "stratadb/config/memory_policy.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -38,7 +39,8 @@ class Arena {
     };
 
     [[nodiscard]] auto memory_used() const noexcept -> std::size_t {
-        return offset_.load(std::memory_order_relaxed);
+        std::size_t off = offset_.load(std::memory_order_relaxed);
+        return std::min(off, config_.total_budget_bytes);
     }
 
   private:
