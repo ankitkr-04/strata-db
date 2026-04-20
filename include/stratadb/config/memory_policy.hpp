@@ -9,6 +9,7 @@ enum class PageStrategy : uint8_t {
     Standard4K,           // Safe, works everywhere.
     Huge2M_Opportunistic, // Try MAP_HUGE_2MB, fallback to 4K without crashing.
     Huge2M_Strict,        // Require MAP_HUGE_2MB, abort if unavailable.
+    Huge1G_Opportunistic, // Try MAP_HUGE_1GB, fallback to 2MB then 4K without crashing.
     Huge1G_Strict         // Bleeding-edge bare-metal only.
 };
 
@@ -34,6 +35,8 @@ struct MemoryConfig {
 
     std::size_t total_budget_bytes{DEFAULT_TOTAL_BUDGET};
     std::size_t tlab_size_bytes{DEFAULT_TLAB_SIZE};
+
+    bool prefault{false};
 };
 
 } // namespace stratadb::config
