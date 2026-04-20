@@ -45,19 +45,19 @@ This converts unsafe immediate free into a deferred free protocol driven by obse
 ## Data Flow
 ```mermaid
 flowchart TD
-	A[ThreadGuard ctor] --> B[register_thread]
-	B --> C[ReadGuard ctor]
-	C --> D[enter publishes epoch]
-	D --> E[retire stores node with retire_epoch]
-	E --> F[advance_epoch]
-	F --> G[reclaim scans active thread states]
-	G --> H{retire_epoch < min_active_epoch}
-	H -- yes --> I[deleter(ptr)]
-	H -- no --> J[node kept in retire list]
-	C --> K[ReadGuard dtor]
-	K --> L[leave sets UINT64_MAX]
-	A --> M[ThreadGuard dtor]
-	M --> N[unregister_thread]
+    A[ThreadGuard ctor] --> B[register_thread]
+    B --> C[ReadGuard ctor]
+    C --> D[enter publishes epoch]
+    D --> E[retire stores node with retire_epoch]
+    E --> F[advance_epoch]
+    F --> G[reclaim scans active thread states]
+    G --> H{retire_epoch < min_active_epoch}
+    H -- yes --> I["deleter(ptr)"]
+    H -- no --> J[node kept in retire list]
+    C --> K[ReadGuard dtor]
+    K --> L[leave sets UINT64_MAX]
+    A --> M[ThreadGuard dtor]
+    M --> N[unregister_thread]
 ```
 
 ## Components
