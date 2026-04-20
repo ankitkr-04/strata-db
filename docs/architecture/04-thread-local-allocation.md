@@ -43,11 +43,11 @@ The thread continues allocating from its local span until exhausted. This limits
 ## Data Flow
 ```mermaid
 flowchart TD
-    A[Thread owns TLAB] --> B[allocate(size, alignment)]
+    A[Thread owns TLAB] --> B["allocate(size, alignment)"]
     B --> C{current block has room?}
     C -- yes --> D[align pointer + bump current_block_]
     D --> E[return pointer]
-    C -- no --> F[refill(min_size + alignment)]
+    C -- no --> F["refill(min_size + alignment)"]
     F --> G[Arena.allocate_block]
     G --> H{span available?}
     H -- yes --> I[set current_block_ and block_end_]
