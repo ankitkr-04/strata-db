@@ -70,11 +70,11 @@ flowchart TD
     E --> F[atomic load snapshot pointer]
     F --> G[return ReadGuard + const MutableConfig*]
 
-    C --> H[update_mutable(new_cfg)]
+    C --> H["update_mutable(new_cfg)"]
     H --> I[allocate replacement snapshot]
     I --> J[lock update_mutex_]
     J --> K[atomic exchange old/new pointer]
-    K --> L[epoch_mgr.retire(old_ptr)]
+    K --> L["epoch_mgr.retire(old_ptr)"]
     L --> M[epoch advance + reclaim path]
 ```
 
