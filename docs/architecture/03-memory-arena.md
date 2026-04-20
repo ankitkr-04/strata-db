@@ -56,7 +56,7 @@ flowchart TD
     H --> J[optional prefault]
     I --> J
     J --> K[Arena ready]
-    K --> L[allocate_block(min_size)]
+    K --> L["allocate_block(min_size)"]
     L --> M[atomic fetch_add offset]
     M --> N{within budget?}
     N -- yes --> O[return aligned span]
