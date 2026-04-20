@@ -40,6 +40,9 @@ endif()
 
 # ------------------ Sanitizer Helper ------------------
 function(enable_sanitizers target)
+  if(STRATADB_ENABLE_ASAN AND STRATADB_ENABLE_TSAN)
+     message(FATAL_ERROR "ASAN and TSAN cannot be enabled together")
+  endif()
   if(STRATADB_ENABLE_ASAN)
     target_compile_options(${target} PRIVATE -fsanitize=address)
     target_link_options(${target} PRIVATE -fsanitize=address)
@@ -60,6 +63,8 @@ endfunction()
 add_library(stratadb STATIC
   src/memory/epoch_manager.cpp
   src/config/config_manager.cpp
+  src/memory/arena.cpp
+  src/memory/tlab.cpp
 )
 
 target_include_directories(stratadb
@@ -68,6 +73,8 @@ target_include_directories(stratadb
 )
 
 target_link_options(stratadb PRIVATE -fuse-ld=mold)
+
+target_link_libraries(stratadb PRIVATE numa)
 
 target_link_libraries(stratadb PRIVATE stratadb_warnings)
 
@@ -101,6 +108,8 @@ FetchContent_MakeAvailable(googletest)
 add_executable(stratadb_tests
   tests/memory/epoch_manager_test.cpp
   tests/config/config_manager_test.cpp
+  tests/memory/arena_test.cpp
+  tests/memory/tlab_test.cpp
 )
 
 target_link_libraries(stratadb_tests

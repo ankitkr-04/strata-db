@@ -25,6 +25,7 @@ Testing/
 perf.data
 perf.data.old
 callgrind.out.*
+perf/
 
 # OS / IDE
 .DS_Store
