@@ -1,8 +1,8 @@
 #include "stratadb/memory/arena.hpp"
 
 #include <bit>
-#include <cerrno>
 #include <cassert>
+#include <cerrno>
 #include <cstring>
 #include <limits>
 #include <numaif.h>
@@ -11,6 +11,7 @@
 namespace stratadb::memory {
 namespace {
 
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
 auto align_up(std::size_t value, std::size_t alignment, std::size_t& out) noexcept -> bool {
     assert(std::has_single_bit(alignment));
     if (!std::has_single_bit(alignment)) {
@@ -174,6 +175,10 @@ auto Arena::create(const config::MemoryConfig& config) noexcept -> std::expected
 
     // apply NUMA policy (truthful + fallback)
     if (!apply_numa_policy(ptr, total, effective_config.numa_policy)) {
+        if (effective_config.numa_policy == config::NumaPolicy::StrictLocal) {
+            munmap(ptr, total);
+            return std::unexpected(ArenaError::MbindFailed);
+        }
         // fallback → record actual behavior
         effective_config.numa_policy = config::NumaPolicy::UMA;
     }
@@ -216,6 +221,7 @@ auto Arena::allocate_block(std::size_t min_size) noexcept -> std::span<std::byte
     }
 }
 
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
 auto Arena::allocate_aligned(std::size_t size, std::size_t alignment) noexcept -> void* {
     assert(std::has_single_bit(alignment));
     if (!base_ || !std::has_single_bit(alignment)) [[unlikely]] {
