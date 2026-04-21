@@ -7,6 +7,20 @@
 
 using stratadb::memory::EpochManager;
 
+namespace {
+
+template <typename T>
+void do_not_optimize(const T& value) noexcept {
+#if defined(__GNUC__) || defined(__clang__)
+    __asm__ __volatile__("" : : "g"(value) : "memory");
+#else
+    (void)value;
+    std::atomic_signal_fence(std::memory_order_seq_cst);
+#endif
+}
+
+} // namespace
+
 // Test helper
 struct Dummy {
     static std::atomic<int> destructions;
@@ -23,7 +37,7 @@ TEST(EpochManagerTest, SingleThreadedReclaim) {
     EpochManager mgr;
     Dummy::destructions.store(0);
 
-    EpochManager::ThreadGuard tg(mgr);
+    EpochManager::ThreadRegistrationGuard tg(mgr);
 
     auto* obj = new Dummy();
 
@@ -48,7 +62,7 @@ TEST(EpochManagerTest, DeferredDeletion) {
     std::atomic<bool> a_left{false};
 
     std::jthread threadA([&] {
-        EpochManager::ThreadGuard tg(mgr);
+        EpochManager::ThreadRegistrationGuard tg(mgr);
 
         {
             EpochManager::ReadGuard guard(mgr);
@@ -63,7 +77,7 @@ TEST(EpochManagerTest, DeferredDeletion) {
     });
 
     std::jthread threadB([&] {
-        EpochManager::ThreadGuard tg(mgr);
+        EpochManager::ThreadRegistrationGuard tg(mgr);
 
         while (!a_ready.load(std::memory_order_acquire)) {
             std::this_thread::yield();
@@ -104,12 +118,12 @@ TEST(EpochManagerTest, TSANStress) {
     // Readers
     for (int i = 0; i < NUM_READERS; ++i) {
         threads.emplace_back([&] {
-            EpochManager::ThreadGuard tg(mgr);
+            EpochManager::ThreadRegistrationGuard tg(mgr);
 
             for (int j = 0; j < 10000; ++j) {
                 EpochManager::ReadGuard guard(mgr);
-                volatile int x = j * j;
-                (void)x;
+                auto x = j * j;
+                do_not_optimize(x);
             }
         });
     }
@@ -117,7 +131,7 @@ TEST(EpochManagerTest, TSANStress) {
     // Writers (FIXED)
     for (int i = NUM_READERS; i < NUM_THREADS; ++i) {
         threads.emplace_back([&] {
-            EpochManager::ThreadGuard tg(mgr);
+            EpochManager::ThreadRegistrationGuard tg(mgr);
 
             for (int j = 0; j < 10000; ++j) {
                 mgr.advance_epoch();
@@ -135,7 +149,7 @@ TEST(EpochManagerTest, TSANStress) {
     threads.clear();
 
     {
-        EpochManager::ThreadGuard tg(mgr);
+        EpochManager::ThreadRegistrationGuard tg(mgr);
 
         mgr.advance_epoch();
         mgr.advance_epoch();
@@ -150,7 +164,7 @@ TEST(EpochManagerTest, BatchingBehavior) {
     EpochManager mgr;
     Dummy::destructions.store(0);
 
-    EpochManager::ThreadGuard tg(mgr);
+    EpochManager::ThreadRegistrationGuard tg(mgr);
 
     for (int i = 0; i < 63; ++i) {
         mgr.retire(new Dummy());
@@ -170,7 +184,7 @@ TEST(EpochManagerTest, EpochStallPreventsReclaim) {
     std::atomic<bool> reader_ready{false};
 
     std::jthread reader([&] {
-        EpochManager::ThreadGuard tg(mgr);
+        EpochManager::ThreadRegistrationGuard tg(mgr);
 
         {
             EpochManager::ReadGuard guard(mgr);
@@ -180,7 +194,7 @@ TEST(EpochManagerTest, EpochStallPreventsReclaim) {
     });
 
     std::jthread writer([&] {
-        EpochManager::ThreadGuard tg(mgr);
+        EpochManager::ThreadRegistrationGuard tg(mgr);
 
         while (!reader_ready.load(std::memory_order_acquire)) {
         }
@@ -201,7 +215,7 @@ TEST(EpochManagerTest, ThreadSlotReuse) {
 
     for (int i = 0; i < 1000; ++i) {
         std::jthread t([&] {
-            EpochManager::ThreadGuard tg(mgr);
+            EpochManager::ThreadRegistrationGuard tg(mgr);
             EpochManager::ReadGuard guard(mgr);
         });
     }
@@ -214,7 +228,7 @@ TEST(EpochManagerTest, MultiEpochReclaim) {
     EpochManager mgr;
     Dummy::destructions.store(0);
 
-    EpochManager::ThreadGuard tg(mgr);
+    EpochManager::ThreadRegistrationGuard tg(mgr);
 
     for (int i = 0; i < 100; ++i) {
         {
@@ -234,7 +248,7 @@ TEST(EpochManagerTest, ReclaimIdempotent) {
     EpochManager mgr;
     Dummy::destructions.store(0);
 
-    EpochManager::ThreadGuard tg(mgr);
+    EpochManager::ThreadRegistrationGuard tg(mgr);
 
     auto* obj = new Dummy();
 

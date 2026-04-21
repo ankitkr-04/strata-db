@@ -1,27 +1,21 @@
 #pragma once
 
+#include "stratadb/utils/hardware.hpp"
+
 #include <array>
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
-#include <new>
 #include <vector>
 
 namespace stratadb::memory {
 
-namespace defaults {
-constexpr std::size_t MAX_THREADS = 128;
-constexpr std::size_t RECLAIM_BATCH = 64;
-constexpr std::size_t RECLAIM_MASK = RECLAIM_BATCH - 1;
-constexpr std::size_t RETIRE_LIST_THRESHOLD = 10000;
-
-} // namespace defaults
-
 class EpochManager {
   public:
-    class ReadGuard {
+    class [[nodiscard]] ReadGuard {
       public:
-        explicit ReadGuard(EpochManager& mgr) noexcept
+        [[nodiscard]] explicit ReadGuard(EpochManager& mgr) noexcept
             : mgr_(&mgr) {
             mgr_->enter();
         }
@@ -34,49 +28,35 @@ class EpochManager {
 
         ReadGuard(const ReadGuard&) = delete;
         ReadGuard& operator=(const ReadGuard&) = delete;
-
-        // Safe move semantics: steal the pointer and hollow out the source
-        ReadGuard(ReadGuard&& other) noexcept
-            : mgr_(other.mgr_) {
-            other.mgr_ = nullptr;
-        }
-
-        // Move assignment (optional, but good practice if you implement move construction)
-        ReadGuard& operator=(ReadGuard&& other) noexcept {
-            if (this != &other) {
-                if (mgr_ != nullptr) {
-                    mgr_->leave();
-                }
-                mgr_ = other.mgr_;
-                other.mgr_ = nullptr;
-            }
-            return *this;
-        }
+        ReadGuard(ReadGuard&&) = delete;
+        ReadGuard& operator=(ReadGuard&&) = delete;
 
       private:
         EpochManager* mgr_;
     };
 
-    class ThreadGuard {
+    class [[nodiscard]] ThreadRegistrationGuard {
       public:
-        explicit ThreadGuard(EpochManager& mgr)
+        [[nodiscard]] explicit ThreadRegistrationGuard(EpochManager& mgr)
             : mgr_(mgr) {
             mgr_.register_thread();
         }
 
-        ~ThreadGuard() noexcept {
+        ~ThreadRegistrationGuard() noexcept {
             mgr_.unregister_thread();
         }
 
-        ThreadGuard(const ThreadGuard&) = delete;
-        ThreadGuard& operator=(const ThreadGuard&) = delete;
+        ThreadRegistrationGuard(const ThreadRegistrationGuard&) = delete;
+        ThreadRegistrationGuard& operator=(const ThreadRegistrationGuard&) = delete;
+        ThreadRegistrationGuard(ThreadRegistrationGuard&&) = delete;
+        ThreadRegistrationGuard& operator=(ThreadRegistrationGuard&&) = delete;
 
       private:
         EpochManager& mgr_;
     };
 
-    friend class ReadGuard;   // Allow ReadGuard to call private enter/leave methods
-    friend class ThreadGuard; // Allow ThreadGuard to call private register/unregister methods
+    friend class ReadGuard;
+    friend class ThreadRegistrationGuard;
 
     template <typename T>
     void retire(T* ptr) noexcept {
@@ -87,24 +67,39 @@ class EpochManager {
     void advance_epoch() noexcept;
     void reclaim() noexcept;
 
+    // Single-threaded teardown escape hatch: bypasses epoch checks and drains every retire list.
+    void force_reclaim_all() noexcept;
+
   private:
+    static constexpr std::size_t MAX_THREADS = 128;
+    static constexpr std::size_t ACTIVE_THREAD_MASK_WORDS = MAX_THREADS / 64;
+    static constexpr std::size_t RECLAIM_BATCH = 64;
+    static constexpr std::size_t RECLAIM_MASK = RECLAIM_BATCH - 1;
+    static constexpr std::size_t RETIRE_LIST_THRESHOLD = 10000;
     static constexpr std::size_t INVALID_THREAD = std::numeric_limits<std::size_t>::max();
+    static constexpr std::uint64_t INACTIVE_EPOCH = std::numeric_limits<std::uint64_t>::max();
+    static_assert(MAX_THREADS % 64 == 0);
+
     struct RetireNode {
         void* ptr{nullptr};
         void (*deleter)(void*){nullptr};
-        uint64_t retire_epoch{0};
+        std::uint64_t retire_epoch{0};
     };
 
-    struct alignas(std::hardware_destructive_interference_size) ThreadState {
-        std::atomic<uint64_t> state{UINT64_MAX};
+    struct alignas(stratadb::utils::CACHE_LINE_SIZE) ThreadState {
+        std::atomic<std::uint64_t> state{INACTIVE_EPOCH};
         std::vector<RetireNode> retire_list_;
-        std::atomic<bool> in_use{false};
+    };
+
+    struct alignas(stratadb::utils::CACHE_LINE_SIZE) ActiveThreadMaskWord {
+        std::atomic<std::uint64_t> bits{0};
     };
 
   private:
-    std::atomic<uint64_t> global_epoch_{0};
+    std::atomic<std::uint64_t> global_epoch_{0};
 
-    std::array<ThreadState, defaults::MAX_THREADS> thread_states_{};
+    std::array<ThreadState, MAX_THREADS> thread_states_{};
+    std::array<ActiveThreadMaskWord, ACTIVE_THREAD_MASK_WORDS> active_thread_masks_{};
 
     inline static thread_local std::size_t thread_index_{INVALID_THREAD};
 

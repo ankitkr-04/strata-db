@@ -30,12 +30,13 @@ This converts unsafe immediate free into a deferred free protocol driven by obse
 
 | Element | Backing Type | Role in Safety |
 | --- | --- | --- |
-| Global logical clock | `std::atomic<uint64_t> global_epoch_` | Defines retirement timeline |
-| Per-thread state | `ThreadState` array (`MAX_THREADS=128`) | Captures liveness and reader epoch |
-| Reader marker | `state` with `UINT64_MAX` sentinel | Distinguishes active vs inactive slot |
+| Global logical clock | `std::atomic<std::uint64_t> global_epoch_` | Defines retirement timeline |
+| Per-thread state | `ThreadState` array (`MAX_THREADS=128`) | Captures reader epoch and retire queues |
+| Active slot index | `active_thread_masks_` | Tracks registered threads without scanning inactive cache lines |
+| Reader marker | `state` with `INACTIVE_EPOCH` sentinel | Distinguishes active vs inactive slot |
 | Deferred free queue | `std::vector<RetireNode> retire_list_` per slot | Holds reclaim candidates |
 | Read scope guard | `EpochManager::ReadGuard` | Ensures enter/leave symmetry |
-| Registration guard | `EpochManager::ThreadGuard` | Ensures register/unregister symmetry |
+| Registration guard | `EpochManager::ThreadRegistrationGuard` | Ensures register/unregister symmetry |
 
 ## System Context
 - Public API and constants: `include/stratadb/memory/epoch_manager.hpp`
@@ -45,7 +46,7 @@ This converts unsafe immediate free into a deferred free protocol driven by obse
 ## Data Flow
 ```mermaid
 flowchart TD
-    A[ThreadGuard ctor] --> B[register_thread]
+    A[ThreadRegistrationGuard ctor] --> B[register_thread]
     B --> C[ReadGuard ctor]
     C --> D[enter publishes epoch]
     D --> E[retire stores node with retire_epoch]
@@ -55,8 +56,8 @@ flowchart TD
     H -- yes --> I["deleter(ptr)"]
     H -- no --> J[node kept in retire list]
     C --> K[ReadGuard dtor]
-    K --> L[leave sets UINT64_MAX]
-    A --> M[ThreadGuard dtor]
+    K --> L[leave sets INACTIVE_EPOCH]
+    A --> M[ThreadRegistrationGuard dtor]
     M --> N[unregister_thread]
 ```
 
@@ -71,18 +72,18 @@ Immediate deletion is unsafe under concurrent readers because readers can still 
 
 #### How It Works
 - Tracks current logical epoch in `global_epoch_`.
-- Tracks each thread in a fixed `thread_states_` array.
+- Tracks each thread in a fixed `thread_states_` array and a dense active-thread bitset.
 - Uses a thread-local slot index (`thread_index_`) to avoid per-call slot lookup.
 - Reclaims only nodes older than the minimum active epoch.
 
 #### Concurrency Model
 - Atomics are used for epoch and slot liveness/visibility.
 - Per-thread retire lists reduce global write contention.
-- Reclaim observes all in-use thread slots with acquire loads.
+- Reclaim observes active slot bits first, then loads only registered thread states.
 
 #### Trade-offs
 - Fixed maximum thread count simplifies layout but imposes a hard cap.
-- Reclaim cost scales with slot scan size.
+- Reclaim cost scales with active thread count instead of the full slot array.
 
 ### ReadGuard
 #### Responsibility
@@ -92,7 +93,7 @@ Provide scoped reader participation in epoch tracking.
 Manual enter/leave calls are fragile in exception paths and early returns.
 
 #### How It Works
-Constructor calls `enter()`, destructor calls `leave()`, move operations transfer ownership and null the source guard pointer.
+Constructor calls `enter()`, destructor calls `leave()`, and copy/move operations are deleted so read sections remain lexically scoped.
 
 #### Concurrency Model
 Publishes reader epoch to the owning thread slot using release store and clears with sentinel on scope exit.
@@ -100,7 +101,7 @@ Publishes reader epoch to the owning thread slot using release store and clears 
 #### Trade-offs
 RAII makes control flow safer, but readers still control read section duration, which can delay reclaim.
 
-### ThreadGuard
+### ThreadRegistrationGuard
 #### Responsibility
 Ensure thread-slot ownership follows scope lifetime.
 
@@ -111,7 +112,7 @@ Thread registration is required before read/retire/reclaim operations that depen
 Registers on construction and unregisters on destruction.
 
 #### Concurrency Model
-Uses compare-and-exchange on `in_use` to claim slots and release store to return slots.
+Uses compare-and-exchange on the dense active-thread bitset to claim and release slots.
 
 #### Trade-offs
 Prevents accidental leaked registrations, but requires all participating threads to opt in explicitly.
@@ -136,7 +137,8 @@ Low retire-path contention, but deferred memory can accumulate when readers stal
 | Decision | Why | Alternative Rejected | Trade-off |
 | --- | --- | --- | --- |
 | Fixed slot array (`MAX_THREADS=128`) | Stable storage and cache-friendly slot scan | Dynamic unbounded slot container | Hard upper bound on registered threads |
-| Sentinel active-state encoding (`UINT64_MAX`) | Compact active/inactive representation | Separate active flag + epoch field checks | Requires careful sentinel semantics |
+| Dense active-thread bitset | Avoids pulling every inactive `ThreadState` cache line into reclaim | Per-slot active flag scan | Registration has a small bitset CAS cost |
+| Sentinel active-state encoding (`INACTIVE_EPOCH`) | Compact active/inactive reader representation | Separate active flag + epoch field checks | Requires careful sentinel semantics |
 | Per-thread retire list | Avoids global queue lock on retire path | Global synchronized retire queue | Reclaim progress can be uneven per thread |
 | Periodic reclaim trigger (`RECLAIM_MASK`) | Amortizes reclaim overhead across retire calls | Reclaim on every retire | Delayed memory release in low-retire cadence |
 
@@ -145,7 +147,7 @@ Low retire-path contention, but deferred memory can accumulate when readers stal
 | --- | --- | --- | --- |
 | Reclaim stall | Long-lived reader keeps old epoch published | Retired memory cannot be freed | Keep read sections short and bounded |
 | Registration failure | All slots in use (`MAX_THREADS` reached) | Runtime exception from `register_thread()` | Increase limit or reduce concurrent participant count |
-| API misuse by unregistered thread | Missing `ThreadGuard`/registration | Assertion failure or terminate path | Enforce thread entry policy in call sites |
+| API misuse by unregistered thread | Missing `ThreadRegistrationGuard`/registration | Assertion failure or terminate path | Enforce thread entry policy in call sites |
 | Retire-list growth pressure | Retire rate exceeds reclaim progress | Memory growth and latency spikes | Periodic reclaim, epoch advancement, and backpressure yield |
 
 ## Testing and Performance Evidence
@@ -182,7 +184,7 @@ This aligns with stress-heavy tests that repeatedly retire, advance epochs, and 
 | Read shared data | Hold `ReadGuard` in active thread | Deferred frees cannot reclaim data visible to that reader |
 | Publish retire candidate | Registered thread with valid slot | Object is retired, not immediately deleted |
 | Progress reclamation | Advance epoch and call reclaim | Objects older than minimum active epoch become reclaimable |
-| Thread teardown | Scope-exit `ThreadGuard` | Slot is released and thread marked inactive |
+| Thread teardown | Scope-exit `ThreadRegistrationGuard` | Slot is released and thread marked inactive |
 
 ## Not Verified
 - Production workload behavior beyond the provided tests.
