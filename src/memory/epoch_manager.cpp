@@ -19,7 +19,7 @@ void EpochManager::register_thread() {
         auto& active_bits = active_thread_masks_[word_index].bits;
         std::uint64_t observed = active_bits.load(std::memory_order_acquire);
 
-        while (observed != INACTIVE_EPOCH) {
+        while (observed != ~std::uint64_t{0}) {
             const std::uint64_t available = ~observed;
             const auto bit_index = static_cast<std::size_t>(std::countr_zero(available));
             const std::uint64_t bit = std::uint64_t{1} << bit_index;
