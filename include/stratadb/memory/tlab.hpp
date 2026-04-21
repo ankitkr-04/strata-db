@@ -14,10 +14,22 @@ class TLAB {
     explicit TLAB(Arena& arena) noexcept;
 
     TLAB(const TLAB&) = delete;
-    TLAB& operator=(const TLAB&) = delete;
+    auto operator=(const TLAB&) -> TLAB& = delete;
     TLAB(TLAB&&) = delete;
-    TLAB& operator=(TLAB&&) = delete;
+    auto operator=(TLAB&&) -> TLAB& = delete;
     ~TLAB() noexcept;
+
+    // Must be called before the backing Arena is retired.
+    // After detach(), all allocations return nullptr.
+    void detach() noexcept {
+        current_block_ = nullptr;
+        block_end_ = nullptr;
+        arena_ = nullptr;
+    }
+
+    [[nodiscard]] auto is_attached() const noexcept -> bool {
+        return arena_ != nullptr;
+    }
 
     [[nodiscard]] inline auto allocate(std::size_t size, std::size_t alignment = alignof(std::max_align_t)) noexcept
         -> void* {
