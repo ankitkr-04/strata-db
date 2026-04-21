@@ -6,11 +6,12 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <expected>
 #include <limits>
 #include <vector>
 
 namespace stratadb::memory {
-
+enum class EpochError : std::uint8_t { ThreadLimitExceeded };
 class EpochManager {
   public:
     class [[nodiscard]] ReadGuard {
@@ -37,22 +38,31 @@ class EpochManager {
 
     class [[nodiscard]] ThreadRegistrationGuard {
       public:
-        [[nodiscard]] explicit ThreadRegistrationGuard(EpochManager& mgr)
-            : mgr_(mgr) {
-            mgr_.register_thread();
-        }
+        [[nodiscard]] explicit ThreadRegistrationGuard(EpochManager& mgr) noexcept
+            : mgr_(mgr)
+            , result_(mgr_.register_thread()) {}
 
         ~ThreadRegistrationGuard() noexcept {
-            mgr_.unregister_thread();
+            if (result_.has_value())
+                mgr_.unregister_thread();
         }
 
         ThreadRegistrationGuard(const ThreadRegistrationGuard&) = delete;
-        ThreadRegistrationGuard& operator=(const ThreadRegistrationGuard&) = delete;
+        auto operator=(const ThreadRegistrationGuard&) -> ThreadRegistrationGuard& = delete;
         ThreadRegistrationGuard(ThreadRegistrationGuard&&) = delete;
-        ThreadRegistrationGuard& operator=(ThreadRegistrationGuard&&) = delete;
+        auto operator=(ThreadRegistrationGuard&&) -> ThreadRegistrationGuard& = delete;
+
+        [[nodiscard]] auto is_registered() const noexcept -> bool {
+            return result_.has_value();
+        }
+
+        [[nodiscard]] auto result() const noexcept -> std::expected<void, EpochError> {
+            return result_;
+        }
 
       private:
         EpochManager& mgr_;
+        std::expected<void, EpochError> result_;
     };
 
     friend class ReadGuard;
@@ -62,7 +72,7 @@ class EpochManager {
     void retire(T* ptr) noexcept {
         if (ptr == nullptr)
             return;
-        retire_node(static_cast<void*>(ptr), [](void* p) noexcept { delete static_cast<T*>(p); });
+        retire_node(static_cast<void*>(ptr), [](void* p) noexcept -> auto { delete static_cast<T*>(p); });
     }
     void advance_epoch() noexcept;
     void reclaim() noexcept;
@@ -72,13 +82,14 @@ class EpochManager {
 
   private:
     static constexpr std::size_t MAX_THREADS = 128;
-    static constexpr std::size_t ACTIVE_THREAD_MASK_WORDS = MAX_THREADS / 64;
-    static constexpr std::size_t RECLAIM_BATCH = 64;
+    static constexpr std::size_t MASK_WORD_BITS = std::numeric_limits<std::uint64_t>::digits;
+    static constexpr std::size_t ACTIVE_THREAD_MASK_WORDS = MAX_THREADS / MASK_WORD_BITS;
+    static constexpr std::size_t RECLAIM_BATCH = MASK_WORD_BITS;
     static constexpr std::size_t RECLAIM_MASK = RECLAIM_BATCH - 1;
     static constexpr std::size_t RETIRE_LIST_THRESHOLD = 10000;
     static constexpr std::size_t INVALID_THREAD = std::numeric_limits<std::size_t>::max();
     static constexpr std::uint64_t INACTIVE_EPOCH = std::numeric_limits<std::uint64_t>::max();
-    static_assert(MAX_THREADS % 64 == 0);
+    static_assert(MAX_THREADS % MASK_WORD_BITS == 0);
 
     struct RetireNode {
         void* ptr{nullptr};
@@ -107,7 +118,7 @@ class EpochManager {
     void retire_node(void* ptr, void (*deleter)(void*)) noexcept;
     void enter() noexcept;
     void leave() noexcept;
-    void register_thread();
+    [[nodiscard]] auto register_thread() -> std::expected<void, EpochError>;
     void unregister_thread();
 };
 

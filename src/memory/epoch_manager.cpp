@@ -1,18 +1,18 @@
 #include "stratadb/memory/epoch_manager.hpp"
 
 #include <algorithm>
-#include <cassert>
 #include <bit>
+#include <cassert>
 #include <stdexcept>
 #include <thread>
 
 namespace stratadb::memory {
 
-void EpochManager::register_thread() {
+auto EpochManager::register_thread() -> std::expected<void, EpochError> {
     // Each thread must register exactly once
     assert(thread_index_ == INVALID_THREAD);
     if (thread_index_ != INVALID_THREAD) {
-        std::terminate();
+        std::terminate(); // state is already corrupted, cannot continue
     }
 
     for (std::size_t word_index = 0; word_index < ACTIVE_THREAD_MASK_WORDS; ++word_index) {
@@ -32,13 +32,12 @@ void EpochManager::register_thread() {
                 const std::size_t slot = (word_index * 64) + bit_index;
                 thread_states_[slot].state.store(INACTIVE_EPOCH, std::memory_order_release);
                 thread_index_ = slot;
-                return;
+                return {};
             }
         }
     }
 
-    // No free slot available → hard failure
-    throw std::runtime_error("Exceeded maximum number of threads for EpochManager");
+    return std::unexpected(EpochError::ThreadLimitExceeded);
 }
 
 void EpochManager::unregister_thread() {
