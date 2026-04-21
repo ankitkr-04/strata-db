@@ -14,6 +14,14 @@ option(STRATADB_ENABLE_ASAN "Enable AddressSanitizer" OFF)
 option(STRATADB_ENABLE_UBSAN "Enable UBSan" OFF)
 option(STRATADB_ENABLE_TSAN "Enable ThreadSanitizer" OFF)
 option(STRATADB_ENABLE_LTO "Enable LTO" OFF)
+option(STRATADB_USE_MOLD "Use the mold linker when it is installed" ON)
+
+if(STRATADB_USE_MOLD)
+  find_program(STRATADB_MOLD_LINKER mold)
+  if(NOT STRATADB_MOLD_LINKER)
+    message(STATUS "mold linker requested but not found; using the compiler default linker")
+  endif()
+endif()
 
 # ------------------ Strict Warnings ------------------
 add_library(stratadb_warnings INTERFACE)
@@ -30,13 +38,6 @@ target_compile_options(stratadb_warnings INTERFACE
   -Wcast-align
   -Werror
 )
-
-# Compiler-specific flags
-if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-  target_compile_options(stratadb_warnings INTERFACE
-    -Wno-interference-size
-  )
-endif()
 
 # ------------------ Sanitizer Helper ------------------
 function(enable_sanitizers target)
@@ -59,6 +60,12 @@ function(enable_sanitizers target)
   endif()
 endfunction()
 
+function(enable_mold_linker target)
+  if(STRATADB_USE_MOLD AND STRATADB_MOLD_LINKER)
+    target_link_options(${target} PRIVATE -fuse-ld=mold)
+  endif()
+endfunction()
+
 # ------------------ Core Library ------------------
 add_library(stratadb STATIC
   src/memory/epoch_manager.cpp
@@ -72,7 +79,7 @@ target_include_directories(stratadb
   PRIVATE src
 )
 
-target_link_options(stratadb PRIVATE -fuse-ld=mold)
+enable_mold_linker(stratadb)
 
 target_link_libraries(stratadb PRIVATE numa)
 
@@ -118,7 +125,7 @@ target_link_libraries(stratadb_tests
     GTest::gtest_main
 )
 
-target_link_options(stratadb_tests PRIVATE -fuse-ld=mold)
+enable_mold_linker(stratadb_tests)
 
 target_compile_features(stratadb_tests PUBLIC cxx_std_26)
 
@@ -135,13 +142,6 @@ target_compile_options(stratadb_tests PRIVATE
   -Wcast-align
   -Werror
 )
-
-# Compiler-specific for tests
-if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-  target_compile_options(stratadb_tests PRIVATE
-    -Wno-interference-size
-  )
-endif()
 
 enable_sanitizers(stratadb_tests)
 

@@ -11,6 +11,20 @@ using stratadb::config::ImmutableConfig;
 using stratadb::config::MutableConfig;
 using stratadb::memory::EpochManager;
 
+namespace {
+
+template <typename T>
+void do_not_optimize(const T& value) noexcept {
+#if defined(__GNUC__) || defined(__clang__)
+    __asm__ __volatile__("" : : "g"(value) : "memory");
+#else
+    (void)value;
+    std::atomic_signal_fence(std::memory_order_seq_cst);
+#endif
+}
+
+} // namespace
+
 struct TrackableConfig : public MutableConfig {
     static std::atomic<int> destructions;
 
@@ -23,7 +37,7 @@ std::atomic<int> TrackableConfig::destructions{0};
 
 TEST(ConfigManagerTest, BasicRead) {
     EpochManager epoch;
-    EpochManager::ThreadGuard tg(epoch);
+    EpochManager::ThreadRegistrationGuard tg(epoch);
 
     MutableConfig mut{};
     ImmutableConfig imm{};
@@ -40,7 +54,7 @@ TEST(ConfigManagerTest, BasicRead) {
 
 TEST(ConfigManagerTest, UpdateVisibility) {
     EpochManager epoch;
-    EpochManager::ThreadGuard tg(epoch);
+    EpochManager::ThreadRegistrationGuard tg(epoch);
 
     MutableConfig mut{};
     ImmutableConfig imm{};
@@ -60,7 +74,7 @@ TEST(ConfigManagerTest, UpdateVisibility) {
 
 TEST(ConfigManagerTest, ConcurrentReaders) {
     EpochManager epoch;
-    EpochManager::ThreadGuard tg(epoch);
+    EpochManager::ThreadRegistrationGuard tg(epoch);
 
     MutableConfig mut{};
     ImmutableConfig imm{};
@@ -73,12 +87,12 @@ TEST(ConfigManagerTest, ConcurrentReaders) {
 
     for (int i = 0; i < NUM_THREADS; ++i) {
         threads.emplace_back([&] {
-            EpochManager::ThreadGuard local_tg(epoch);
+            EpochManager::ThreadRegistrationGuard local_tg(epoch);
 
             for (int j = 0; j < ITERS; ++j) {
                 auto guard = mgr.get_mutable();
-                volatile int x = guard->background_compaction_threads;
-                (void)x;
+                auto x = guard->background_compaction_threads;
+                do_not_optimize(x);
             }
         });
     }
@@ -86,7 +100,7 @@ TEST(ConfigManagerTest, ConcurrentReaders) {
 
 TEST(ConfigManagerTest, ConcurrentReadWrite) {
     EpochManager epoch;
-    EpochManager::ThreadGuard tg(epoch);
+    EpochManager::ThreadRegistrationGuard tg(epoch);
 
     MutableConfig mut{};
     ImmutableConfig imm{};
@@ -101,21 +115,21 @@ TEST(ConfigManagerTest, ConcurrentReadWrite) {
 
     for (int i = 0; i < NUM_READERS; ++i) {
         threads.emplace_back([&] {
-            EpochManager::ThreadGuard local_tg(epoch);
+            EpochManager::ThreadRegistrationGuard local_tg(epoch);
 
             while (!start.load(std::memory_order_acquire)) {
             }
 
             for (int j = 0; j < NUM_WRITES; ++j) {
                 auto guard = mgr.get_mutable();
-                volatile int x = guard->background_compaction_threads;
-                (void)x;
+                auto x = guard->background_compaction_threads;
+                do_not_optimize(x);
             }
         });
     }
 
     threads.emplace_back([&] {
-        EpochManager::ThreadGuard local_tg(epoch);
+        EpochManager::ThreadRegistrationGuard local_tg(epoch);
 
         start.store(true, std::memory_order_release);
 
@@ -135,7 +149,7 @@ TEST(ConfigManagerTest, ConcurrentReadWrite) {
 
 TEST(ConfigManagerTest, NoUseAfterFreeStress) {
     EpochManager epoch;
-    EpochManager::ThreadGuard tg(epoch);
+    EpochManager::ThreadRegistrationGuard tg(epoch);
 
     MutableConfig mut{};
     ImmutableConfig imm{};
@@ -148,13 +162,13 @@ TEST(ConfigManagerTest, NoUseAfterFreeStress) {
 
     for (int i = 0; i < NUM_THREADS; ++i) {
         threads.emplace_back([&] {
-            EpochManager::ThreadGuard local_tg(epoch);
+            EpochManager::ThreadRegistrationGuard local_tg(epoch);
 
             for (int j = 0; j < ITERS; ++j) {
                 auto guard = mgr.get_mutable();
 
-                volatile int x = guard->background_compaction_threads;
-                (void)x;
+                auto x = guard->background_compaction_threads;
+                do_not_optimize(x);
 
                 if ((j & 15) == 0) {
                     epoch.advance_epoch();
@@ -165,7 +179,7 @@ TEST(ConfigManagerTest, NoUseAfterFreeStress) {
     }
 
     threads.emplace_back([&] {
-        EpochManager::ThreadGuard local_tg(epoch);
+        EpochManager::ThreadRegistrationGuard local_tg(epoch);
 
         for (int i = 0; i < ITERS; ++i) {
             MutableConfig cfg{};
@@ -177,7 +191,7 @@ TEST(ConfigManagerTest, NoUseAfterFreeStress) {
 
 TEST(ConfigManagerTest, ReclamationOccurs) {
     EpochManager epoch;
-    EpochManager::ThreadGuard tg(epoch);
+    EpochManager::ThreadRegistrationGuard tg(epoch);
 
     TrackableConfig::destructions.store(0);
 
@@ -199,7 +213,7 @@ TEST(ConfigManagerTest, ReclamationOccurs) {
 
 TEST(ConfigManagerTest, PointerStability) {
     EpochManager epoch;
-    EpochManager::ThreadGuard tg(epoch);
+    EpochManager::ThreadRegistrationGuard tg(epoch);
 
     MutableConfig mut{};
     ImmutableConfig imm{};

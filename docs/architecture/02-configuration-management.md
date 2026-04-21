@@ -101,7 +101,7 @@ Changing immutable values requires reconstructing manager state rather than in-p
 Define runtime-tunable settings that can be safely swapped while readers are active.
 
 #### Why This Exists
-Operational tuning (threads, WAL policy, memtable thresholds) must evolve at runtime without pausing all readers.
+Operational tuning such as background threads and memtable behavior must evolve at runtime without pausing all readers.
 
 #### How It Works
 Writers allocate a new `MutableConfig` snapshot and publish via atomic pointer exchange.

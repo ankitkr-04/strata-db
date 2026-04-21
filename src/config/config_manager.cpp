@@ -1,5 +1,6 @@
 #include "stratadb/config/config_manager.hpp"
 
+#include <exception>
 #include <new>
 #include <utility>
 
@@ -21,22 +22,13 @@ ConfigManager::~ConfigManager() noexcept {
     auto* ptr = current_mutable_config_.load(std::memory_order_acquire);
 
     if (ptr) {
-
         epoch_mgr_.retire(ptr);
-
-        epoch_mgr_.advance_epoch();
-        epoch_mgr_.advance_epoch();
-        epoch_mgr_.reclaim();
+        epoch_mgr_.force_reclaim_all();
     }
 }
 
 ConfigManager::ReadGuard ConfigManager::get_mutable() const noexcept {
-
-    memory::EpochManager::ReadGuard e_guard(epoch_mgr_);
-
-    MutableConfig* ptr = current_mutable_config_.load(std::memory_order_acquire);
-
-    return ConfigManager::ReadGuard(std::move(e_guard), ptr);
+    return ConfigManager::ReadGuard(*this);
 }
 
 void ConfigManager::update_mutable(MutableConfig new_cfg) noexcept {

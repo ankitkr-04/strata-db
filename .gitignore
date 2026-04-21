@@ -51,3 +51,4 @@ compile_commands.json
 
 #agents
 .agents/
+.codex
