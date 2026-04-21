@@ -44,15 +44,14 @@ class TLAB {
                 }
             }
 
-            const auto remaining = static_cast<std::size_t>(block_end_ - current_block_);
-            return allocate_slow(size, alignment, remaining);
+            return allocate_slow(size, alignment);
         }
 
-        return allocate_slow(size, alignment, 0);
+        return allocate_slow(size, alignment);
     }
 
   private:
-    auto allocate_slow(std::size_t size, std::size_t alignment, std::size_t remaining) noexcept -> void*;
+    auto allocate_slow(std::size_t size, std::size_t alignment) noexcept -> void*;
     auto refill(std::size_t min_size) noexcept -> bool;
 
   private:

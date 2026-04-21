@@ -11,12 +11,12 @@ TLAB::TLAB(Arena& arena) noexcept
 
 TLAB::~TLAB() noexcept = default;
 
-auto TLAB::allocate_slow(std::size_t size, std::size_t alignment, std::size_t remaining) noexcept -> void* {
-    const std::size_t tlab_size = arena_->tlab_size();
-    const bool direct_large_allocation = size >= tlab_size;
-    const bool preserve_useful_slack = current_block_ != nullptr && remaining >= alignment && size < tlab_size;
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+auto TLAB::allocate_slow(std::size_t size, std::size_t alignment) noexcept -> void* {
 
-    if (direct_large_allocation || preserve_useful_slack) {
+    const std::size_t tlab_size = arena_->tlab_size();
+
+    if (size >= (tlab_size / 2)) {
         return arena_->allocate_aligned(size, alignment);
     }
 
