@@ -58,7 +58,7 @@ TEST(Arena, AllocateBlockLarge) {
 
     ASSERT_FALSE(span.empty());
     EXPECT_GE(span.size(), req);
-    EXPECT_EQ(span.size() % 4096, 0u);
+    EXPECT_EQ(span.size() % cfg.block_alignment_bytes, 0u);
 }
 
 TEST(Arena, Alignment) {
@@ -71,7 +71,7 @@ TEST(Arena, Alignment) {
     ASSERT_FALSE(span.empty());
 
     auto ptr = reinterpret_cast<std::uintptr_t>(span.data());
-    EXPECT_EQ(ptr % 4096, 0u);
+    EXPECT_EQ(ptr % cfg.block_alignment_bytes, 0u);
 }
 
 TEST(Arena, OutOfMemory) {
@@ -141,15 +141,15 @@ TEST(Arena, NoOverlap) {
 
     std::vector<std::uintptr_t> ptrs;
 
-    for (int i = 0; i < 5; ++i) {
+    for (std::size_t i = 0; i < 5; ++i) {
         auto s = arena.allocate_block(1024);
         ASSERT_FALSE(s.empty());
 
         ptrs.push_back(reinterpret_cast<std::uintptr_t>(s.data()));
     }
 
-    for (size_t i = 0; i < ptrs.size(); ++i) {
-        for (size_t j = i + 1; j < ptrs.size(); ++j) {
+    for (std::size_t i = 0; i < ptrs.size(); ++i) {
+        for (std::size_t j = i + 1; j < ptrs.size(); ++j) {
             EXPECT_NE(ptrs[i], ptrs[j]);
         }
     }
@@ -173,15 +173,15 @@ TEST(Arena, ConcurrentAllocation) {
 
     auto arena = Arena::create(cfg).value();
 
-    constexpr int threads = 4;
-    constexpr int iters = 50;
+    constexpr std::size_t threads = 4;
+    constexpr std::size_t iters = 50;
 
     std::vector<std::thread> workers;
     std::atomic<bool> failed = false;
 
-    for (int t = 0; t < threads; ++t) {
+    for (std::size_t t = 0; t < threads; ++t) {
         workers.emplace_back([&]() {
-            for (int i = 0; i < iters; ++i) {
+            for (std::size_t i = 0; i < iters; ++i) {
                 auto s = arena.allocate_block(1024);
                 if (s.empty()) {
                     failed = true;
@@ -205,7 +205,7 @@ TEST(Arena, RandomStress) {
     std::mt19937 rng(42);
     std::uniform_int_distribution<std::size_t> dist(1, 1 << 20);
 
-    for (int i = 0; i < 1000; ++i) {
+    for (std::size_t i = 0; i < 1000; ++i) {
         auto s = arena.allocate_block(dist(rng));
         if (s.empty())
             break;

@@ -1,17 +1,29 @@
 #include "stratadb/memory/arena.hpp"
 
+#include <bit>
 #include <cerrno>
+#include <cassert>
 #include <cstring>
+#include <limits>
 #include <numaif.h>
 #include <sys/mman.h>
 
 namespace stratadb::memory {
 namespace {
 
-constexpr std::size_t kBlockAlign = 4096;
+auto align_up(std::size_t value, std::size_t alignment, std::size_t& out) noexcept -> bool {
+    assert(std::has_single_bit(alignment));
+    if (!std::has_single_bit(alignment)) {
+        return false;
+    }
 
-auto align_up(std::size_t v, std::size_t alignment) noexcept -> std::size_t {
-    return (v + alignment - 1) & ~(alignment - 1);
+    const std::size_t mask = alignment - 1;
+    if (value > std::numeric_limits<std::size_t>::max() - mask) {
+        return false;
+    }
+
+    out = (value + mask) & ~mask;
+    return true;
 }
 
 auto try_mmap(std::size_t size, int flags) noexcept -> void* {
@@ -175,22 +187,58 @@ auto Arena::create(const config::MemoryConfig& config) noexcept -> std::expected
 }
 
 auto Arena::allocate_block(std::size_t min_size) noexcept -> std::span<std::byte> {
-
-    std::size_t size = (min_size > config_.tlab_size_bytes) ? min_size : config_.tlab_size_bytes;
-
-    size = align_up(size, kBlockAlign);
-
     if (!base_) [[unlikely]] {
         return {};
     }
 
-    std::size_t old = offset_.fetch_add(size, std::memory_order_relaxed);
+    std::size_t size = (min_size > config_.tlab_size_bytes) ? min_size : config_.tlab_size_bytes;
 
-    if (config_.total_budget_bytes < size || old > config_.total_budget_bytes - size) [[unlikely]] {
+    if (!align_up(size, config_.block_alignment_bytes, size)) [[unlikely]] {
         return {};
     }
 
-    return {base_ + old, size};
+    std::size_t old = offset_.load(std::memory_order_relaxed);
+
+    while (true) {
+        std::size_t aligned_offset = 0;
+        if (!align_up(old, config_.block_alignment_bytes, aligned_offset)) [[unlikely]] {
+            return {};
+        }
+
+        if (config_.total_budget_bytes < size || aligned_offset > config_.total_budget_bytes - size) [[unlikely]] {
+            return {};
+        }
+
+        const std::size_t next = aligned_offset + size;
+        if (offset_.compare_exchange_weak(old, next, std::memory_order_acq_rel, std::memory_order_relaxed)) {
+            return {base_ + aligned_offset, size};
+        }
+    }
+}
+
+auto Arena::allocate_aligned(std::size_t size, std::size_t alignment) noexcept -> void* {
+    assert(std::has_single_bit(alignment));
+    if (!base_ || !std::has_single_bit(alignment)) [[unlikely]] {
+        return nullptr;
+    }
+
+    std::size_t old = offset_.load(std::memory_order_relaxed);
+
+    while (true) {
+        std::size_t aligned_offset = 0;
+        if (!align_up(old, alignment, aligned_offset)) [[unlikely]] {
+            return nullptr;
+        }
+
+        if (config_.total_budget_bytes < size || aligned_offset > config_.total_budget_bytes - size) [[unlikely]] {
+            return nullptr;
+        }
+
+        const std::size_t next = aligned_offset + size;
+        if (offset_.compare_exchange_weak(old, next, std::memory_order_acq_rel, std::memory_order_relaxed)) {
+            return base_ + aligned_offset;
+        }
+    }
 }
 
 auto Arena::reset() noexcept -> void {

@@ -1,5 +1,6 @@
 #pragma once
-#include "stratadb/config/memory_policy.hpp"
+#include "stratadb/config/memory_config.hpp"
+#include "stratadb/utils/hardware.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -10,7 +11,7 @@
 #include <span>
 
 namespace stratadb::memory {
-enum class ArenaError : uint8_t {
+enum class ArenaError : std::uint8_t {
     MmapFailed,
     OutOfMemory, // ENOMEM
     MbindFailed,
@@ -28,6 +29,7 @@ class Arena {
     Arena& operator=(Arena&& other) noexcept;
 
     [[nodiscard]] auto allocate_block(std::size_t min_size) noexcept -> std::span<std::byte>;
+    [[nodiscard]] auto allocate_aligned(std::size_t size, std::size_t alignment) noexcept -> void*;
 
     void reset() noexcept;
 
@@ -51,7 +53,7 @@ class Arena {
     std::byte* base_{nullptr};
     config::MemoryConfig config_{};
 
-    alignas(std::hardware_destructive_interference_size) std::atomic<std::size_t> offset_{0};
+    alignas(stratadb::utils::CACHE_LINE_SIZE) std::atomic<std::size_t> offset_{0};
 };
 
 } // namespace stratadb::memory

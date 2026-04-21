@@ -15,13 +15,13 @@ Document how `TLAB` provides thread-local fast-path allocations, when it refills
 ## Overview
 `TLAB` is a lightweight bump-pointer allocator owned by a thread context and backed by `Arena` blocks. It performs alignment-aware pointer movement in a local block and uses `refill(...)` only when local capacity is insufficient.
 
-Policy from `include/stratadb/config/memory_policy.hpp` influences TLAB behavior indirectly through arena block sizes (`tlab_size_bytes`) and total memory budget.
+Policy from `include/stratadb/config/memory_config.hpp` influences TLAB behavior indirectly through arena block sizes (`tlab_size_bytes`) and total memory budget.
 
 ## System Model
 TLAB follows two paths:
 
 1. Fast path: satisfy request from current local block with alignment fixup.
-2. Slow path: request a new span from Arena via `refill(min_size + alignment)`.
+2. Slow path: allocate large or slack-preserving requests directly from Arena, otherwise request a new span via `refill(min_size + alignment)`.
 
 The thread continues allocating from its local span until exhausted. This limits global allocator interaction to refill boundaries.
 
@@ -31,13 +31,14 @@ The thread continues allocating from its local span until exhausted. This limits
 | --- | --- | --- |
 | Local state | `current_block_`, `block_end_` in `TLAB` | Keeps hot path thread-local pointer arithmetic |
 | Global source | `Arena::allocate_block(...)` | Centralized budget and mapping control |
-| Refill trigger | Fast-path bound check failure | Limits global interactions to block transitions |
+| Refill trigger | Fast-path bound check failure | Limits global interactions to block transitions for small allocations |
 | Alignment handling | `(ptr + align - 1) & ~(align - 1)` | Supports caller-required alignment guarantees |
 
 | Allocation Path | Condition | Result |
 | --- | --- | --- |
 | Fast path | `new_current <= block_end_` | Return aligned pointer from current span |
-| Slow path | Current span null/insufficient | Refill from arena, then retry |
+| Direct path | Request would strand useful TLAB slack or is at least TLAB-sized | Allocate exact aligned bytes from Arena without replacing current span |
+| Refill path | Current span null/insufficient for small allocation | Refill from arena, then retry |
 | OOM path | Arena returns empty span | Return `nullptr` |
 
 ## Data Flow
@@ -47,12 +48,14 @@ flowchart TD
     B --> C{current block has room?}
     C -- yes --> D[align pointer + bump current_block_]
     D --> E[return pointer]
-    C -- no --> F["refill(min_size + alignment)"]
-    F --> G[Arena.allocate_block]
-    G --> H{span available?}
-    H -- yes --> I[set current_block_ and block_end_]
-    I --> B
-    H -- no --> J[return nullptr]
+    C -- no --> F{direct allocation?}
+    F -- yes --> G[Arena.allocate_aligned]
+    F -- no --> H["refill(min_size + alignment)"]
+    H --> I[Arena.allocate_block]
+    I --> J{span available?}
+    J -- yes --> K[set current_block_ and block_end_]
+    K --> B
+    J -- no --> L[return nullptr]
 ```
 
 ## Components
@@ -97,7 +100,7 @@ Define allocator budget and preferred block size through `MemoryConfig` consumed
 TLAB behavior should be configurable without hardcoding per-platform assumptions.
 
 #### How It Works
-`tlab_size_bytes` and `total_budget_bytes` in `memory_policy.hpp` shape Arena blocks and OOM boundary behavior observed by TLAB.
+`tlab_size_bytes` and `total_budget_bytes` in `memory_config.hpp` shape Arena blocks and OOM boundary behavior observed by TLAB.
 
 #### Concurrency Model
 Policy values are fixed at arena creation; TLAB reads behavior through arena outcomes, not mutable policy state.
@@ -109,6 +112,7 @@ Static sizes simplify runtime behavior but may require tuning for workload size 
 | Decision | Why | Alternative Rejected | Trade-off |
 | --- | --- | --- | --- |
 | Thread-local bump allocation | Minimize allocator overhead on frequent small allocations | Always allocate via shared global allocator | Requires refill handoff and local state discipline |
+| Direct Arena allocation for large/slack-preserving requests | Avoid stranding useful TLAB slack under mixed allocation sizes | Always refill on TLAB miss | More CAS traffic for large objects |
 | Refill using `min_size + alignment` | Avoid immediate post-refill failure due to alignment shift | Refill with `min_size` only | Slightly larger block consumption in edge alignments |
 | `nullptr` OOM signaling | Keeps allocation path noexcept and explicit | Throwing on allocation failure | Caller must handle null-return contract |
 | Arena-backed policy control | Reuse unified budget/page/NUMA policy | Standalone TLAB mmap per thread | More coupling to Arena semantics |
@@ -126,7 +130,7 @@ Static sizes simplify runtime behavior but may require tuning for workload size 
   - `include/stratadb/memory/tlab.hpp`
   - `src/memory/tlab.cpp`
   - `include/stratadb/memory/arena.hpp`
-  - `include/stratadb/config/memory_policy.hpp`
+  - `include/stratadb/config/memory_config.hpp`
 - Correctness tests: `tests/memory/tlab_test.cpp` (basic allocation, alignment, refill trigger, boundary behavior, large allocation, OOM, stress, alignment torture).
 - Full test run status (current workspace): all 37 discovered tests pass.
 - Heavy run status: `perf/gtest_heavy_release.log` shows 40 repeated full-suite passes.

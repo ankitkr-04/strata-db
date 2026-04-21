@@ -48,13 +48,13 @@ TEST(TLAB, SequentialAllocation) {
 
     std::vector<std::uintptr_t> ptrs;
 
-    for (int i = 0; i < 10; ++i) {
+    for (std::size_t i = 0; i < 10; ++i) {
         auto p = reinterpret_cast<std::uintptr_t>(tlab.allocate(64));
         ASSERT_NE(p, 0u);
         ptrs.push_back(p);
     }
 
-    for (size_t i = 1; i < ptrs.size(); ++i) {
+    for (std::size_t i = 1; i < ptrs.size(); ++i) {
         EXPECT_GT(ptrs[i], ptrs[i - 1]);
     }
 }
@@ -62,19 +62,19 @@ TEST(TLAB, SequentialAllocation) {
 // ---------- REFILL ----------
 
 TEST(TLAB, RefillTrigger) {
-    auto arena = Arena::create(make_config(16ULL * 1024, 4096)).value();
+    auto arena = Arena::create(make_config(16ULL * 1024, MemoryConfig::DEFAULT_BLOCK_ALIGNMENT)).value();
     TLAB tlab(arena);
 
     std::vector<void*> ptrs;
 
-    for (int i = 0; i < 10; ++i) {
+    for (std::size_t i = 0; i < 10; ++i) {
         auto p = tlab.allocate(1024);
         ASSERT_NE(p, nullptr);
         ptrs.push_back(p);
     }
 
     // Ensure pointers are still valid and increasing
-    for (size_t i = 1; i < ptrs.size(); ++i) {
+    for (std::size_t i = 1; i < ptrs.size(); ++i) {
         EXPECT_NE(ptrs[i], ptrs[i - 1]);
     }
 }
@@ -82,7 +82,7 @@ TEST(TLAB, RefillTrigger) {
 // ---------- EXACT BOUNDARY ----------
 
 TEST(TLAB, ExactBoundary) {
-    auto arena = Arena::create(make_config(8192, 4096)).value();
+    auto arena = Arena::create(make_config(8192, MemoryConfig::DEFAULT_BLOCK_ALIGNMENT)).value();
     TLAB tlab(arena);
 
     auto p1 = tlab.allocate(2048);
@@ -111,7 +111,7 @@ TEST(TLAB, LargeAllocation) {
 // ---------- OOM ----------
 
 TEST(TLAB, OutOfMemory) {
-    auto arena = Arena::create(make_config(8192, 4096)).value();
+    auto arena = Arena::create(make_config(8192, MemoryConfig::DEFAULT_BLOCK_ALIGNMENT)).value();
     TLAB tlab(arena);
 
     while (true) {
@@ -132,7 +132,7 @@ TEST(TLAB, RandomStress) {
     std::mt19937 rng(42);
     std::uniform_int_distribution<std::size_t> dist(1, 1 << 20);
 
-    for (int i = 0; i < 10000; ++i) {
+    for (std::size_t i = 0; i < 10000; ++i) {
         auto p = tlab.allocate(dist(rng));
         if (!p)
             break;

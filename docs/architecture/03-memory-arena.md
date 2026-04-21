@@ -10,10 +10,10 @@ Date: 2026-04-20
 - 2026-04-20: Created architecture documentation for Arena allocation, NUMA/page strategy behavior, and validation/perf workflow.
 
 ## Purpose
-Explain how the Arena provides page-backed block allocation for memory subsystems, how policy from `memory_policy.hpp` controls mapping behavior, and how correctness and runtime behavior are validated.
+Explain how the Arena provides page-backed block allocation for memory subsystems, how policy from `memory_config.hpp` controls mapping behavior, and how correctness and runtime behavior are validated.
 
 ## Overview
-`Arena` is a monotonic, block-based allocator backed by `mmap`. It consumes `MemoryConfig` from `include/stratadb/config/memory_policy.hpp` and applies page strategy, NUMA policy, and optional prefaulting at creation time. Runtime allocation is atomic-offset based with no per-allocation locks.
+`Arena` is a monotonic, block-based allocator backed by `mmap`. It consumes `MemoryConfig` from `include/stratadb/config/memory_config.hpp` and applies page strategy, NUMA policy, and optional prefaulting at creation time. Runtime allocation is atomic-offset based with no per-allocation locks.
 
 ## System Model
 Arena follows a reservation-and-slice model:
@@ -30,13 +30,13 @@ This model avoids per-allocation metadata churn and makes allocation cost predic
 
 | Area | Implementation | Why It Matters |
 | --- | --- | --- |
-| Config source | `include/stratadb/config/memory_policy.hpp` (`MemoryConfig`) | Centralizes page/NUMA/budget controls |
+| Config source | `include/stratadb/config/memory_config.hpp` (`MemoryConfig`) | Centralizes page/NUMA/budget controls |
 | Backing memory | `mmap` in `src/memory/arena.cpp` | Large contiguous region for block slicing |
 | Allocation cursor | `std::atomic<std::size_t> offset_` | Lock-free block reservation across threads |
-| Block sizing | `max(min_size, tlab_size_bytes)` then 4KB align | Ensures predictable lower bound and alignment |
+| Block sizing | `max(min_size, tlab_size_bytes)` then `block_alignment_bytes` align | Ensures predictable lower bound and configurable alignment |
 | Failure signaling | Empty `std::span<std::byte>` | Non-throwing OOM behavior in hot paths |
 
-| Policy Dimension | Options in `memory_policy.hpp` | Runtime Effect |
+| Policy Dimension | Options in `memory_config.hpp` | Runtime Effect |
 | --- | --- | --- |
 | Page strategy | 4K, 2MB (strict/opportunistic), 1GB (strict/opportunistic) | Controls huge-page attempt and fallback path |
 | NUMA policy | UMA, Interleaved, StrictLocal | Controls mbind placement mode |
@@ -57,7 +57,7 @@ flowchart TD
     I --> J
     J --> K[Arena ready]
     K --> L["allocate_block(min_size)"]
-    L --> M[atomic fetch_add offset]
+    L --> M[atomic CAS offset reservation]
     M --> N{within budget?}
     N -- yes --> O[return aligned span]
     N -- no --> P[return empty span]
@@ -74,11 +74,11 @@ Threaded allocation paths need low-overhead reservation without allocator-global
 
 #### How It Works
 - `Arena::create(...)` performs page-strategy mapping attempts.
-- `allocate_block(...)` computes block size, aligns to 4KB, then reserves space using `offset_.fetch_add`.
+- `allocate_block(...)` computes block size, aligns to `block_alignment_bytes`, then reserves space with a compare-exchange loop so failed requests do not advance the cursor.
 - `reset()` rewinds offset to zero.
 
 #### Concurrency Model
-`allocate_block` uses one atomic cursor (`offset_`) with relaxed ordering. No per-call mutex exists in the hot path.
+`allocate_block` uses one atomic cursor (`offset_`) with compare-exchange reservation. No per-call mutex exists in the hot path.
 
 #### Trade-offs
 - Very fast concurrent reservation path.
@@ -136,7 +136,7 @@ Improves portability, but effective runtime policy can differ from requested pol
 - Source of truth:
   - `include/stratadb/memory/arena.hpp`
   - `src/memory/arena.cpp`
-  - `include/stratadb/config/memory_policy.hpp`
+  - `include/stratadb/config/memory_config.hpp`
 - Correctness tests: `tests/memory/arena_test.cpp` (initialization, alignment, OOM, reset, move semantics, concurrency, NUMA/prefault safety).
 - Full test run status (current workspace): all 37 discovered tests pass.
 - Heavy run status: `perf/gtest_heavy_release.log` contains 40 repeated full-suite passes.
