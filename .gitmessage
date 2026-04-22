@@ -1,0 +1,12 @@
+# RULES:
+# - Use Conventional Commits: feat, fix, refactor, perf, etc.
+# - Scope = subsystem (memtable, skiplist, tlab, allocator)
+# - Focus on WHY, not WHAT
+# - Mention perf/concurrency impact if relevant
+# - No generic phrases
+
+feat(scope): short summary (<=60 chars)
+
+- Why:
+- Design decision:
+- Impact:
