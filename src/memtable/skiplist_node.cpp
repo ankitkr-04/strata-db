@@ -97,4 +97,50 @@ auto SkipListNode::value() const noexcept -> std::string_view {
     return {value_ptr, val_len_};
 }
 
+auto SkipListNode::construct(void* mem,
+                             // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+                             std::string_view user_key,
+                             std::string_view value,
+                             std::uint64_t sequence,
+                             ValueType type,
+                             std::uint8_t height) noexcept -> SkipListNode* {
+    assert(mem != nullptr);
+    assert((reinterpret_cast<std::uintptr_t>(mem) % 8) == 0
+           && "TLAB allocation must be 8-byte aligned for atomic<SkipListNode*>");
+    assert(height >= 1);
+    assert(sequence <= ((std::uint64_t{1} << 56) - 1)
+           && "Sequence number must fit in 56 bits (trailer = (seq<<8)|type)");
+
+    auto* node = static_cast<SkipListNode*>(mem);
+
+    const auto ikey_len = static_cast<std::uint32_t>(user_key.size() + trailerbytes);
+    node->key_len_ = ikey_len;
+    node->val_len_ = static_cast<std::uint32_t>(value.size());
+    node->height_ = height;
+
+    const std::size_t copy_len = std::min(user_key.size(), std::size_t{7});
+
+    if (copy_len < 7) {
+        std::memset(node->prefix_ + copy_len, '\0', 7 - copy_len);
+    }
+
+    std::atomic<SkipListNode*>* tower = node->next_nodes();
+
+    for (std::uint8_t i = 0; i < height; ++i) {
+        new (tower + i) std::atomic<SkipListNode*>{nullptr};
+    }
+
+    char* payload = reinterpret_cast<char*>(tower + height);
+
+    std::memcpy(payload, user_key.data(), user_key.size());
+
+    const std::uint64_t trailer = (sequence << trailerbytes) | static_cast<std::uint64_t>(type);
+
+    std::memcpy(payload + user_key.size(), &trailer, sizeof(trailer));
+
+    std::memcpy(payload + ikey_len, value.data(), value.size());
+
+    return node;
+}
+
 } // namespace stratadb::memtable
