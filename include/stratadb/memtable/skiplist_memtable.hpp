@@ -3,6 +3,7 @@
 #include "stratadb/memory/arena.hpp"
 #include "stratadb/memory/epoch_manager.hpp"
 #include "stratadb/memory/tlab.hpp"
+#include "stratadb/memtable/memtable_concept.hpp"
 #include "stratadb/memtable/skiplist_node.hpp"
 #include "stratadb/utils/hardware.hpp"
 
@@ -65,4 +66,6 @@ class SkipListMemTable {
 
     alignas(utils::CACHE_LINE_SIZE) std::atomic<std::size_t> memory_usage_{0};
 };
+
+static_assert(IsMemTable<SkipListMemTable>, "SkipListMemTable does not satisfy the MemTable concept");
 } // namespace stratadb::memtable
