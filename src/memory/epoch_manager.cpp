@@ -89,6 +89,8 @@ void EpochManager::retire_node(void* ptr, void (*deleter)(void*)) noexcept {
     state.retire_list_.push_back(RetireNode{.ptr = ptr, .deleter = deleter, .retire_epoch = retire_epoch});
 
     if ((state.retire_list_.size() & RECLAIM_MASK) == 0) [[unlikely]] {
+        //Advance epoch after every RECLAIM_INTERVAL retirements (tuning parameter)
+        advance_epoch();
         // Periodically attempt to reclaim (tuning parameter)
         reclaim();
 
