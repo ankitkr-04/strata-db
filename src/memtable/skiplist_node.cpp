@@ -61,16 +61,40 @@ static inline auto payload_start(const SkipListNode* n) noexcept -> const char* 
     return reinterpret_cast<const char*>(n->next_nodes() + n->height_);
 }
 
-// ── internal_key 
+// ── internal_key
 auto SkipListNode::internal_key() const noexcept -> std::string_view {
     return {payload_start(this), key_len_};
 }
 
-// ── user_key 
+// ── user_key
 auto SkipListNode::user_key() const noexcept -> std::string_view {
     // Strip the 8-byte trailer from key_len_.
     assert(key_len_ >= 8 && "InternalKey must be at least 8 bytes (trailer only)");
     return {payload_start(this), key_len_ - 8};
+}
+
+static inline auto decode_trailer(const SkipListNode* n) noexcept -> std::uint64_t {
+    assert(n->key_len_ >= 8);
+    const char* trailer_ptr = payload_start(n) + (n->key_len_ - 8);
+    std::uint64_t packed{};
+    std::memcpy(&packed, trailer_ptr, sizeof(packed));
+    return packed;
+}
+
+auto SkipListNode::sequence_number() const noexcept -> std::uint64_t {
+    return decode_trailer(this) >> trailerbytes; // upper 56 bits
+}
+
+// ── value_type
+auto SkipListNode::value_type() const noexcept -> ValueType {
+    return static_cast<ValueType>(decode_trailer(this) & 0xFF); // lowest byte
+}
+
+// ── value
+auto SkipListNode::value() const noexcept -> std::string_view {
+    // Value bytes start immediately after the InternalKey region.
+    const char* value_ptr = payload_start(this) + key_len_;
+    return {value_ptr, val_len_};
 }
 
 } // namespace stratadb::memtable
