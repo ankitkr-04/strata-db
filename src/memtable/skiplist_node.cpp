@@ -46,4 +46,31 @@ auto SkipListNode::allocation_size(std::uint8_t height, std::size_t key_len, std
     return total;
 }
 
+auto SkipListNode::next_nodes() noexcept -> std::atomic<SkipListNode*>* {
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+    return reinterpret_cast<std::atomic<SkipListNode*>*>(this + 1);
+}
+
+auto SkipListNode::next_nodes() const noexcept -> const std::atomic<SkipListNode*>* {
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+    return reinterpret_cast<const std::atomic<SkipListNode*>*>(this + 1);
+}
+
+static inline auto payload_start(const SkipListNode* n) noexcept -> const char* {
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+    return reinterpret_cast<const char*>(n->next_nodes() + n->height_);
+}
+
+// ── internal_key 
+auto SkipListNode::internal_key() const noexcept -> std::string_view {
+    return {payload_start(this), key_len_};
+}
+
+// ── user_key 
+auto SkipListNode::user_key() const noexcept -> std::string_view {
+    // Strip the 8-byte trailer from key_len_.
+    assert(key_len_ >= 8 && "InternalKey must be at least 8 bytes (trailer only)");
+    return {payload_start(this), key_len_ - 8};
+}
+
 } // namespace stratadb::memtable
