@@ -73,6 +73,7 @@ add_library(stratadb STATIC
   src/memory/arena.cpp
   src/memory/tlab.cpp
   src/memtable/skiplist_node.cpp
+  src/memtable/skiplist_memtable.cpp
 )
 
 target_include_directories(stratadb
