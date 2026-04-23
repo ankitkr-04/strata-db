@@ -119,6 +119,7 @@ add_executable(stratadb_tests
   tests/config/config_manager_test.cpp
   tests/memory/arena_test.cpp
   tests/memory/tlab_test.cpp
+  tests/memtable/skiplist_memtable_test.cpp
 )
 
 target_link_libraries(stratadb_tests
