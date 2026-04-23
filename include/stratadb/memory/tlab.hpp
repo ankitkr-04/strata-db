@@ -62,8 +62,8 @@ class TLAB {
     }
 
   private:
-    auto allocate_slow(std::size_t size, std::size_t alignment) noexcept -> void*;
-    auto refill(std::size_t min_size) noexcept -> bool;
+    [[nodiscard]] auto allocate_slow(std::size_t size, std::size_t alignment) noexcept -> void*;
+    [[nodiscard]] auto refill(std::size_t min_size) noexcept -> bool;
 
   private:
     std::byte* current_block_{nullptr};
