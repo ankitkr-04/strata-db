@@ -65,7 +65,7 @@ TEST(ConfigManagerTest, UpdateVisibility) {
     MutableConfig new_cfg{};
     new_cfg.background_compaction_threads = 8;
 
-    mgr.update_mutable(new_cfg);
+    ASSERT_TRUE(mgr.update_mutable(new_cfg).has_value());
 
     {
         auto guard = mgr.get_mutable();
@@ -138,7 +138,7 @@ TEST(ConfigManagerTest, ConcurrentReadWrite) {
             MutableConfig cfg{};
             cfg.background_compaction_threads = i;
 
-            mgr.update_mutable(cfg);
+            ASSERT_TRUE(mgr.update_mutable(cfg).has_value());
 
             if ((i & 7) == 0) {
                 epoch.quiescent_reclaim();
@@ -183,7 +183,7 @@ TEST(ConfigManagerTest, NoUseAfterFreeStress) {
         for (std::uint32_t i = 0; i < static_cast<std::uint32_t>(ITERS); ++i) {
             MutableConfig cfg{};
             cfg.background_compaction_threads = i;
-            mgr.update_mutable(cfg);
+            ASSERT_TRUE(mgr.update_mutable(cfg).has_value());
         }
     });
 }
@@ -201,7 +201,7 @@ TEST(ConfigManagerTest, ReclamationOccurs) {
 
     for (int i = 0; i < 100; ++i) {
         TrackableConfig cfg{};
-        mgr.update_mutable(cfg);
+        ASSERT_TRUE(mgr.update_mutable(cfg).has_value());
         epoch.quiescent_reclaim();
     }
 
@@ -220,7 +220,7 @@ TEST(ConfigManagerTest, PointerStability) {
     auto* ptr1 = &guard.get();
 
     MutableConfig new_cfg{};
-    mgr.update_mutable(new_cfg);
+    ASSERT_TRUE(mgr.update_mutable(new_cfg).has_value());
 
     auto* ptr2 = &guard.get();
 

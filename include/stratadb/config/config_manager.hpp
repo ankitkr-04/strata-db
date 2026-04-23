@@ -6,9 +6,14 @@
 #include "stratadb/utils/hardware.hpp"
 
 #include <atomic>
+#include <expected>
 #include <mutex>
 
 namespace stratadb::config {
+
+enum class ConfigError : std::uint8_t {
+  OutOfMemory,
+};
 
 class ConfigManager {
   public:
@@ -51,7 +56,7 @@ class ConfigManager {
     // Relies on guaranteed copy elision (C++17) because ReadGuard is non-copyable and non-movable.
     [[nodiscard]] ReadGuard get_mutable() const noexcept;
 
-    void update_mutable(MutableConfig new_cfg) noexcept;
+    auto update_mutable(MutableConfig new_cfg) -> std::expected<void, ConfigError>;
 
   private:
     ImmutableConfig immutable_config_;

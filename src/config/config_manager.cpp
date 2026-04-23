@@ -38,10 +38,10 @@ ConfigManager::ReadGuard ConfigManager::get_mutable() const noexcept {
     return ConfigManager::ReadGuard(*this);
 }
 
-void ConfigManager::update_mutable(MutableConfig new_cfg) noexcept {
+auto ConfigManager::update_mutable(MutableConfig new_cfg) -> std::expected<void, ConfigError> {
     auto* new_ptr = new (std::nothrow) MutableConfig{std::move(new_cfg)};
     if (!new_ptr) {
-        std::terminate();
+        return std::unexpected(ConfigError::OutOfMemory);
     }
 
     std::lock_guard lock(update_mutex_);
@@ -51,6 +51,8 @@ void ConfigManager::update_mutable(MutableConfig new_cfg) noexcept {
     if (old_ptr) {
         epoch_mgr_.retire(old_ptr);
     }
+
+    return {};
 }
 
 } // namespace stratadb::config
