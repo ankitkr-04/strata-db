@@ -208,6 +208,62 @@ void SkipListMemTable::link_node(SkipListNode* new_node, Splice& splice) noexcep
     return true;
 };
 
+[[nodiscard]] auto SkipListMemTable::put(std::string_view key,
+                                         std::string_view value,
+                                         memory::TLAB& tlab,
+                                         std::size_t flush_trigger_bytes) noexcept -> bool {
+    if (should_flush(flush_trigger_bytes)) {
+        return false;
+    }
+    return insert_node(key, value, ValueType::TypeValue, random_height(), tlab);
+}
 
+[[nodiscard]] auto SkipListMemTable::remove(std::string_view key, memory::TLAB& tlab) noexcept -> bool {
+    return insert_node(key, {}, ValueType::TypeDeletion, 1, tlab);
+}
+[[nodiscard]] auto SkipListMemTable::get(std::string_view key) const noexcept -> std::optional<std::string_view> {
+    const std::uint64_t k_max_seq = std::numeric_limits<std::uint64_t>::max();
 
+    const SkipListNode* cur = head_;
+
+    for (int level = MAX_HEIGHT - 1; level >= 0; --level) {
+
+        while (true) {
+            const SkipListNode* next = cur->next_nodes()[level].load(std::memory_order_acquire);
+            if (!next) {
+                break;
+            }
+
+            const int cmp = compare_impl(next, key, k_max_seq);
+            if (cmp >= 0) {
+                break;
+            }
+
+            cur = next;
+        }
+    }
+
+    const SkipListNode* candidate = cur->next_nodes()[0].load(std::memory_order_acquire);
+    if (candidate == nullptr) {
+        return std::nullopt;
+    }
+
+    if (candidate->user_key() != key) {
+        return std::nullopt;
+    }
+
+    if (candidate->value_type() == ValueType::TypeDeletion) {
+        return std::nullopt;
+    }
+
+    return candidate->value();
+};
+
+[[nodiscard]] auto SkipListMemTable::memory_usage() const noexcept -> std::size_t {
+    return memory_usage_.load(std::memory_order_relaxed);
+}
+
+[[nodiscard]] auto SkipListMemTable::should_flush(std::size_t flush_trigger_bytes) const noexcept -> bool {
+    return memory_usage() >= flush_trigger_bytes;
+}
 } // namespace stratadb::memtable
