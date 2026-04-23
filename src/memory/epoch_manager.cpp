@@ -4,11 +4,12 @@
 #include <bit>
 #include <cassert>
 #include <stdexcept>
+#include <cstdio>
 #include <thread>
 
 namespace stratadb::memory {
 
-auto EpochManager::register_thread() -> std::expected<void, EpochError> {
+auto EpochManager::register_thread() noexcept -> std::expected<void, EpochError> {
     // Each thread must register exactly once
     assert(thread_index_ == INVALID_THREAD);
     if (thread_index_ != INVALID_THREAD) {
@@ -85,13 +86,19 @@ void EpochManager::retire_node(void* ptr, void (*deleter)(void*)) noexcept {
     // Meaning: may still be visible to threads in ≤ this epoch
     std::uint64_t retire_epoch = global_epoch_.load(std::memory_order_acquire);
 
-    // Add to thread-local retire list (no synchronization needed)
-    state.retire_list_.push_back(RetireNode{.ptr = ptr, .deleter = deleter, .retire_epoch = retire_epoch});
+    // Add to thread-local retire list (no synchronization needed).
+    // Vector growth may throw; translate that into a deterministic terminate path with diagnostics.
+    try {
+        state.retire_list_.push_back(RetireNode{.ptr = ptr, .deleter = deleter, .retire_epoch = retire_epoch});
+    } catch (...) {
+        std::fputs("EpochManager::retire_node failed to grow retire list\n", stderr);
+        std::terminate();
+    }
 
-    if ((state.retire_list_.size() & RECLAIM_MASK) == 0) [[unlikely]] {
-        //Advance epoch after every RECLAIM_INTERVAL retirements (tuning parameter)
+    if ((state.retire_list_.size() & RECLAIM_INTERVAL_MASK) == 0) [[unlikely]] {
+        // Advance epoch after every RECLAIM_INTERVAL retirements.
         advance_epoch();
-        // Periodically attempt to reclaim (tuning parameter)
+        // Periodically attempt to reclaim.
         reclaim();
 
         if (state.retire_list_.size() > RETIRE_LIST_THRESHOLD) {

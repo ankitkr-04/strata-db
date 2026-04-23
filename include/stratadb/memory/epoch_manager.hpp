@@ -74,6 +74,11 @@ class EpochManager {
             return;
         retire_node(static_cast<void*>(ptr), [](void* p) noexcept -> auto { delete static_cast<T*>(p); });
     }
+
+    [[nodiscard]] static auto is_registered() noexcept -> bool {
+      return thread_index_ != INVALID_THREAD;
+    }
+
     void advance_epoch() noexcept;
     void reclaim() noexcept;
 
@@ -81,11 +86,14 @@ class EpochManager {
     void force_reclaim_all() noexcept;
 
   private:
+    // 128 threads x 64-byte padded ThreadState ~= 8KB bookkeeping.
     static constexpr std::size_t MAX_THREADS = 128;
     static constexpr std::size_t MASK_WORD_BITS = std::numeric_limits<std::uint64_t>::digits;
     static constexpr std::size_t ACTIVE_THREAD_MASK_WORDS = MAX_THREADS / MASK_WORD_BITS;
-    static constexpr std::size_t RECLAIM_BATCH = MASK_WORD_BITS;
-    static constexpr std::size_t RECLAIM_MASK = RECLAIM_BATCH - 1;
+    // Trigger epoch advance/reclaim every RECLAIM_INTERVAL retirements.
+    static constexpr std::size_t RECLAIM_INTERVAL = MASK_WORD_BITS;
+    static constexpr std::size_t RECLAIM_INTERVAL_MASK = RECLAIM_INTERVAL - 1;
+    // Yield if a single thread accumulates too many unreclaimed pointers.
     static constexpr std::size_t RETIRE_LIST_THRESHOLD = 10000;
     static constexpr std::size_t INVALID_THREAD = std::numeric_limits<std::size_t>::max();
     static constexpr std::uint64_t INACTIVE_EPOCH = std::numeric_limits<std::uint64_t>::max();
@@ -118,7 +126,7 @@ class EpochManager {
     void retire_node(void* ptr, void (*deleter)(void*)) noexcept;
     void enter() noexcept;
     void leave() noexcept;
-    [[nodiscard]] auto register_thread() -> std::expected<void, EpochError>;
+    [[nodiscard]] auto register_thread() noexcept -> std::expected<void, EpochError>;
     void unregister_thread();
 };
 
