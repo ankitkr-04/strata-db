@@ -164,9 +164,9 @@ void SkipListMemTable::link_node(SkipListNode* new_node, Splice& splice) noexcep
                 break;
             }
 
-            auto [new_prev, new_next] = walk_forward(splice.prev[level], level, uk, seq);
-            splice.prev[level] = new_prev;
-            splice.next[level] = new_next;
+            // A failed CAS means concurrent writers changed the search frontier.
+            // Recompute the full splice to avoid using stale upper-level predecessors.
+            splice = find_splice(uk, seq);
         }
     }
 };
@@ -208,7 +208,7 @@ void SkipListMemTable::link_node(SkipListNode* new_node, Splice& splice) noexcep
         return PutResult::FlushNeeded;
     }
     return insert_node(key, value, ValueType::TypeValue, random_height(), tlab) ? PutResult::Ok
-                                                                                  : PutResult::OutOfMemory;
+                                                                                : PutResult::OutOfMemory;
 }
 
 [[nodiscard]] auto SkipListMemTable::remove(std::string_view key, memory::TLAB& tlab) noexcept -> PutResult {
