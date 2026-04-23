@@ -263,7 +263,7 @@ void SkipListMemTable::link_node(SkipListNode* new_node, Splice& splice) noexcep
         return std::nullopt;
     }
 
-    if (candidate->value_type() == ValueType::TypeDeletion) {
+    if (candidate->is_tombstone()) {
         return std::nullopt;
     }
 

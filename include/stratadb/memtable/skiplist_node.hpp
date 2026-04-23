@@ -82,6 +82,10 @@ struct SkipListNode {
         return packed >> TYPE_BITS;
     }
 
+    [[nodiscard]] auto is_tombstone() const noexcept -> bool {
+        return value_type() == ValueType::TypeDeletion;
+    }
+
     // Returns 0 on integer overflow (treated as OOM by the caller).
     [[nodiscard]] static auto
     allocation_size(std::uint8_t height, std::size_t user_key_len, std::size_t val_len) noexcept -> std::size_t;

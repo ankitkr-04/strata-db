@@ -32,6 +32,7 @@ class Arena {
 
     // WARNING: caller must ensure no live TLAB still references this Arena when reset() is called.
     // reset() rewinds offset_ to zero and may reuse memory ranges handed out earlier.
+    // Any std::string_view previously returned from memtable get()/scan() into this Arena becomes invalid.
     void reset() noexcept;
 
     [[nodiscard]] auto capacity() const noexcept -> std::size_t {
@@ -44,6 +45,10 @@ class Arena {
     [[nodiscard]] auto memory_used() const noexcept -> std::size_t {
       // allocate_block/allocate_aligned maintain offset_ <= total_budget_bytes.
       return offset_.load(std::memory_order_relaxed);
+    }
+
+    [[nodiscard]] auto remaining() const noexcept -> std::size_t {
+        return capacity() - memory_used();
     }
 
   private:

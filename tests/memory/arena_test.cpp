@@ -33,6 +33,7 @@ TEST(Arena, Initialization) {
 
     EXPECT_EQ(arena.memory_used(), 0u);
     EXPECT_EQ(arena.capacity(), cfg.total_budget_bytes);
+    EXPECT_EQ(arena.remaining(), cfg.total_budget_bytes);
 }
 
 TEST(Arena, AllocateBlockBasic) {
@@ -45,6 +46,7 @@ TEST(Arena, AllocateBlockBasic) {
     ASSERT_FALSE(span.empty());
     EXPECT_EQ(span.size(), 2 * 1024 * 1024); // tlab size
     EXPECT_EQ(arena.memory_used(), span.size());
+    EXPECT_EQ(arena.remaining(), arena.capacity() - arena.memory_used());
 }
 
 TEST(Arena, AllocateBlockLarge) {

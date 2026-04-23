@@ -35,7 +35,8 @@ class SkipListMemTable {
 
     [[nodiscard]] auto remove(std::string_view key, memory::TLAB& tlab) noexcept -> PutResult;
 
-    [[nodiscard]] auto get(std::string_view key) const noexcept -> std::optional<std::string_view>;
+    [[nodiscard("Arena views become invalid after Arena::reset")]] auto
+    get(std::string_view key) const noexcept -> std::optional<std::string_view>;
 
     [[nodiscard]] auto memory_usage() const noexcept -> std::size_t;
 
