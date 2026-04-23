@@ -1,5 +1,7 @@
 #include "stratadb/memory/arena.hpp"
 
+#include "stratadb/utils/math.hpp"
+
 #include <bit>
 #include <cassert>
 #include <cerrno>
@@ -10,22 +12,6 @@
 
 namespace stratadb::memory {
 namespace {
-
-// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
-auto align_up(std::size_t value, std::size_t alignment, std::size_t& out) noexcept -> bool {
-    assert(std::has_single_bit(alignment));
-    if (!std::has_single_bit(alignment)) {
-        return false;
-    }
-
-    const std::size_t mask = alignment - 1;
-    if (value > std::numeric_limits<std::size_t>::max() - mask) {
-        return false;
-    }
-
-    out = (value + mask) & ~mask;
-    return true;
-}
 
 auto try_mmap(std::size_t size, int flags) noexcept -> void* {
     void* ptr = mmap(nullptr, size, PROT_READ | PROT_WRITE, flags, -1, 0);
@@ -198,7 +184,7 @@ auto Arena::allocate_block(std::size_t min_size) noexcept -> std::span<std::byte
 
     std::size_t size = (min_size > config_.tlab_size_bytes) ? min_size : config_.tlab_size_bytes;
 
-    if (!align_up(size, config_.block_alignment_bytes, size)) [[unlikely]] {
+    if (!utils::align_up_checked(size, config_.block_alignment_bytes, size)) [[unlikely]] {
         return {};
     }
 
@@ -206,7 +192,7 @@ auto Arena::allocate_block(std::size_t min_size) noexcept -> std::span<std::byte
 
     while (true) {
         std::size_t aligned_offset = 0;
-        if (!align_up(old, config_.block_alignment_bytes, aligned_offset)) [[unlikely]] {
+        if (!utils::align_up_checked(old, config_.block_alignment_bytes, aligned_offset)) [[unlikely]] {
             return {};
         }
 
@@ -232,7 +218,7 @@ auto Arena::allocate_aligned(std::size_t size, std::size_t alignment) noexcept -
 
     while (true) {
         std::size_t aligned_offset = 0;
-        if (!align_up(old, alignment, aligned_offset)) [[unlikely]] {
+        if (!utils::align_up_checked(old, alignment, aligned_offset)) [[unlikely]] {
             return nullptr;
         }
 

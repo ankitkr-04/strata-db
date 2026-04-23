@@ -2,7 +2,6 @@
 #include "stratadb/config/memory_config.hpp"
 #include "stratadb/utils/hardware.hpp"
 
-#include <algorithm>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -31,6 +30,8 @@ class Arena {
     [[nodiscard]] auto allocate_block(std::size_t min_size) noexcept -> std::span<std::byte>;
     [[nodiscard]] auto allocate_aligned(std::size_t size, std::size_t alignment) noexcept -> void*;
 
+    // WARNING: caller must ensure no live TLAB still references this Arena when reset() is called.
+    // reset() rewinds offset_ to zero and may reuse memory ranges handed out earlier.
     void reset() noexcept;
 
     [[nodiscard]] auto capacity() const noexcept -> std::size_t {
@@ -41,8 +42,8 @@ class Arena {
     };
 
     [[nodiscard]] auto memory_used() const noexcept -> std::size_t {
-        std::size_t off = offset_.load(std::memory_order_relaxed);
-        return std::min(off, config_.total_budget_bytes);
+      // allocate_block/allocate_aligned maintain offset_ <= total_budget_bytes.
+      return offset_.load(std::memory_order_relaxed);
     }
 
   private:

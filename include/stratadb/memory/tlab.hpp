@@ -1,10 +1,11 @@
 #pragma once
 
+#include "stratadb/utils/math.hpp"
+
 #include <bit>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
-#include <limits>
 
 namespace stratadb::memory {
 class Arena;
@@ -41,18 +42,16 @@ class TLAB {
         if (current_block_ != nullptr) {
             const auto current_ptr = reinterpret_cast<std::uintptr_t>(current_block_);
             const auto end_ptr = reinterpret_cast<std::uintptr_t>(block_end_);
-            const auto mask = static_cast<std::uintptr_t>(alignment - 1);
+            const auto aligned_ptr = utils::align_up_pow2(current_ptr, alignment);
 
-            if (current_ptr <= std::numeric_limits<std::uintptr_t>::max() - mask) [[likely]] {
-                const auto aligned_ptr = (current_ptr + mask) & ~mask;
-
-                if (size <= std::numeric_limits<std::uintptr_t>::max() - aligned_ptr) [[likely]] {
+            // Overflow here would imply a mapping at the edge of virtual address space.
+            if (aligned_ptr >= current_ptr && aligned_ptr <= end_ptr) [[likely]] {
+                const auto remaining = end_ptr - aligned_ptr;
+                if (remaining >= size) [[likely]] {
                     const auto new_current = aligned_ptr + size;
 
-                    if (new_current <= end_ptr) [[likely]] {
-                        current_block_ = reinterpret_cast<std::byte*>(new_current);
-                        return reinterpret_cast<void*>(aligned_ptr);
-                    }
+                    current_block_ = reinterpret_cast<std::byte*>(new_current);
+                    return reinterpret_cast<void*>(aligned_ptr);
                 }
             }
 
