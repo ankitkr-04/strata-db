@@ -48,6 +48,7 @@ class ConfigManager {
         const MutableConfig* config_;
     };
 
+    // Relies on guaranteed copy elision (C++17) because ReadGuard is non-copyable and non-movable.
     [[nodiscard]] ReadGuard get_mutable() const noexcept;
 
     void update_mutable(MutableConfig new_cfg) noexcept;

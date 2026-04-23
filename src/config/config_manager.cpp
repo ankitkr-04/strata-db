@@ -22,9 +22,11 @@ ConfigManager::~ConfigManager() noexcept {
     auto* ptr = current_mutable_config_.load(std::memory_order_acquire);
 
     if (ptr) {
-        epoch_mgr_.retire(ptr);
-        epoch_mgr_.force_reclaim_all();
+        current_mutable_config_.store(nullptr, std::memory_order_release);
+        delete ptr;
     }
+
+    epoch_mgr_.force_reclaim_all();
 }
 
 ConfigManager::ReadGuard ConfigManager::get_mutable() const noexcept {
