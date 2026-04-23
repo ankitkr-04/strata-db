@@ -1,5 +1,6 @@
 #include "stratadb/config/config_manager.hpp"
 
+#include <cstdio>
 #include <exception>
 #include <new>
 #include <utility>
@@ -30,6 +31,10 @@ ConfigManager::~ConfigManager() noexcept {
 }
 
 ConfigManager::ReadGuard ConfigManager::get_mutable() const noexcept {
+    if (!memory::EpochManager::is_registered()) {
+        std::fputs("ConfigManager::get_mutable requires registered epoch thread\n", stderr);
+        std::terminate();
+    }
     return ConfigManager::ReadGuard(*this);
 }
 
