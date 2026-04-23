@@ -76,7 +76,7 @@ class EpochManager {
     }
 
     [[nodiscard]] static auto is_registered() noexcept -> bool {
-      return thread_index_ != INVALID_THREAD;
+        return thread_index_ != INVALID_THREAD;
     }
 
     // Internal maintenance hook for external components/tests that need deterministic progress.

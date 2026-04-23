@@ -9,9 +9,9 @@
 #include <cstring>
 #include <limits>
 #include <new>
-#include <type_traits>
 #include <span>
 #include <string_view>
+#include <type_traits>
 
 namespace stratadb::memtable {
 
