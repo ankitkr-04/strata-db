@@ -79,8 +79,9 @@ class EpochManager {
       return thread_index_ != INVALID_THREAD;
     }
 
-    void advance_epoch() noexcept;
-    void reclaim() noexcept;
+    // Internal maintenance hook for external components/tests that need deterministic progress.
+    // Requires current thread to be registered.
+    void quiescent_reclaim() noexcept;
 
     // Single-threaded teardown escape hatch: bypasses epoch checks and drains every retire list.
     void force_reclaim_all() noexcept;
@@ -126,6 +127,8 @@ class EpochManager {
     void retire_node(void* ptr, void (*deleter)(void*)) noexcept;
     void enter() noexcept;
     void leave() noexcept;
+    void advance_epoch() noexcept;
+    void reclaim() noexcept;
     [[nodiscard]] auto register_thread() noexcept -> std::expected<void, EpochError>;
     void unregister_thread();
 };

@@ -46,8 +46,7 @@ TEST(EpochManagerTest, SingleThreadedReclaim) {
         mgr.retire(obj);
     }
 
-    mgr.advance_epoch();
-    mgr.reclaim();
+    mgr.quiescent_reclaim();
 
     ASSERT_EQ(Dummy::destructions.load(), 1);
 }
@@ -85,9 +84,8 @@ TEST(EpochManagerTest, DeferredDeletion) {
 
         auto* obj = new Dummy();
 
-        mgr.advance_epoch();
         mgr.retire(obj);
-        mgr.reclaim();
+        mgr.quiescent_reclaim();
 
         ASSERT_EQ(Dummy::destructions.load(), 0);
 
@@ -97,8 +95,7 @@ TEST(EpochManagerTest, DeferredDeletion) {
             std::this_thread::yield();
         }
 
-        mgr.advance_epoch();
-        mgr.reclaim();
+        mgr.quiescent_reclaim();
 
         ASSERT_EQ(Dummy::destructions.load(), 1);
     });
@@ -134,13 +131,11 @@ TEST(EpochManagerTest, TSANStress) {
             EpochManager::ThreadRegistrationGuard tg(mgr);
 
             for (int j = 0; j < 10000; ++j) {
-                mgr.advance_epoch();
-
                 auto* obj = new Dummy();
                 mgr.retire(obj);
 
                 if ((j & 7) == 0) {
-                    mgr.reclaim();
+                    mgr.quiescent_reclaim();
                 }
             }
         });
@@ -151,9 +146,8 @@ TEST(EpochManagerTest, TSANStress) {
     {
         EpochManager::ThreadRegistrationGuard tg(mgr);
 
-        mgr.advance_epoch();
-        mgr.advance_epoch();
-        mgr.reclaim();
+        mgr.quiescent_reclaim();
+        mgr.quiescent_reclaim();
 
         ASSERT_GT(Dummy::destructions.load(), 0);
     }
@@ -170,8 +164,7 @@ TEST(EpochManagerTest, BatchingBehavior) {
         mgr.retire(new Dummy());
     }
 
-    mgr.advance_epoch();
-    mgr.reclaim();
+    mgr.quiescent_reclaim();
 
     ASSERT_EQ(Dummy::destructions.load(), 63);
 }
@@ -201,9 +194,8 @@ TEST(EpochManagerTest, EpochStallPreventsReclaim) {
 
         auto* obj = new Dummy();
 
-        mgr.advance_epoch();
         mgr.retire(obj);
-        mgr.reclaim();
+        mgr.quiescent_reclaim();
 
         ASSERT_EQ(Dummy::destructions.load(), 0);
     });
@@ -235,10 +227,8 @@ TEST(EpochManagerTest, MultiEpochReclaim) {
             EpochManager::ReadGuard guard(mgr);
             mgr.retire(new Dummy());
         }
-        mgr.advance_epoch();
+        mgr.quiescent_reclaim();
     }
-
-    mgr.reclaim();
 
     ASSERT_EQ(Dummy::destructions.load(), 100);
 }
@@ -257,9 +247,8 @@ TEST(EpochManagerTest, ReclaimIdempotent) {
         mgr.retire(obj);
     }
 
-    mgr.advance_epoch();
-    mgr.reclaim();
-    mgr.reclaim();
+    mgr.quiescent_reclaim();
+    mgr.quiescent_reclaim();
 
     ASSERT_EQ(Dummy::destructions.load(), 1);
 }

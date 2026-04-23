@@ -141,8 +141,7 @@ TEST(ConfigManagerTest, ConcurrentReadWrite) {
             mgr.update_mutable(cfg);
 
             if ((i & 7) == 0) {
-                epoch.advance_epoch();
-                epoch.reclaim();
+                epoch.quiescent_reclaim();
             }
         }
     });
@@ -172,8 +171,7 @@ TEST(ConfigManagerTest, NoUseAfterFreeStress) {
                 do_not_optimize(x);
 
                 if ((j & 15) == 0) {
-                    epoch.advance_epoch();
-                    epoch.reclaim();
+                    epoch.quiescent_reclaim();
                 }
             }
         });
@@ -204,10 +202,8 @@ TEST(ConfigManagerTest, ReclamationOccurs) {
     for (int i = 0; i < 100; ++i) {
         TrackableConfig cfg{};
         mgr.update_mutable(cfg);
-        epoch.advance_epoch();
+        epoch.quiescent_reclaim();
     }
-
-    epoch.reclaim();
 
     ASSERT_GT(TrackableConfig::destructions.load(), 0);
 }

@@ -72,6 +72,12 @@ void EpochManager::leave() noexcept {
     thread_states_[thread_index_].state.store(INACTIVE_EPOCH, std::memory_order_release);
 }
 
+void EpochManager::quiescent_reclaim() noexcept {
+    assert(thread_index_ != INVALID_THREAD);
+    advance_epoch();
+    reclaim();
+}
+
 void EpochManager::advance_epoch() noexcept {
     // Advance global epoch (logical time)
     // acq_rel ensures ordering with readers/writers
