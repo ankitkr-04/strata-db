@@ -102,12 +102,12 @@ auto SkipListMemTable::make_head() noexcept -> SkipListNode* {
     head->height_ = MAX_HEIGHT;
     std::memset(head->prefix_, 0, 7);
 
-
     auto* tower = head->next_nodes();
     for (std::uint8_t i = 0; i < MAX_HEIGHT; ++i) {
         new (tower + i) std::atomic<SkipListNode*>{nullptr};
     }
 
     return head;
+};
 
 } // namespace stratadb::memtable
