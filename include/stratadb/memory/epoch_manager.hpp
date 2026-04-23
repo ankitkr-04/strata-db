@@ -91,8 +91,8 @@ class EpochManager {
     static constexpr std::size_t MAX_THREADS = 128;
     static constexpr std::size_t MASK_WORD_BITS = std::numeric_limits<std::uint64_t>::digits;
     static constexpr std::size_t ACTIVE_THREAD_MASK_WORDS = MAX_THREADS / MASK_WORD_BITS;
-    // Trigger epoch advance/reclaim every RECLAIM_INTERVAL retirements.
-    static constexpr std::size_t RECLAIM_INTERVAL = MASK_WORD_BITS;
+    // Throughput tuning knob: trigger epoch advance/reclaim every N retirements.
+    static constexpr std::size_t RECLAIM_INTERVAL = 64;
     static constexpr std::size_t RECLAIM_INTERVAL_MASK = RECLAIM_INTERVAL - 1;
     // Yield if a single thread accumulates too many unreclaimed pointers.
     static constexpr std::size_t RETIRE_LIST_THRESHOLD = 10000;
