@@ -4,10 +4,8 @@
 #include "stratadb/memory/tlab.hpp"
 
 #include <concepts>
-#include <functional>
 #include <optional>
 #include <string_view>
-#include <utility>
 
 namespace stratadb::memtable {
 
@@ -30,7 +28,7 @@ concept IsMemTable =
         { t.should_flush() } -> std::convertible_to<bool>;
 
         // Sorted forward scan over all in-memory entries.
-        { t.scan(std::declval<std::function<void(const typename T::EntryView&)>>()) } -> std::same_as<void>;
+        { t.scan([](const typename T::EntryView&) {}) } -> std::same_as<void>;
     };
 
 } // namespace stratadb::memtable

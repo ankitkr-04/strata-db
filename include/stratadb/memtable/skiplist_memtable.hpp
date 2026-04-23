@@ -11,7 +11,6 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
-#include <functional>
 #include <optional>
 #include <string_view>
 
@@ -49,7 +48,20 @@ class SkipListMemTable {
       ValueType type;
     };
 
-    void scan(const std::function<void(const EntryView&)>& visitor) const;
+    template <typename Visitor>
+    void scan(Visitor&& visitor) const {
+      const SkipListNode* node = head_->next_nodes()[0].load(std::memory_order_acquire);
+      while (node != nullptr) {
+        visitor(EntryView{
+          .key = node->user_key(),
+          .value = node->value(),
+          .sequence = node->sequence_number(),
+          .type = node->value_type(),
+        });
+
+        node = node->next_nodes()[0].load(std::memory_order_acquire);
+      }
+    }
 
   private:
     struct Splice {
