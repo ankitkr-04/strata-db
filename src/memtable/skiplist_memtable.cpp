@@ -209,7 +209,11 @@ void SkipListMemTable::link_node(SkipListNode* new_node, Splice& splice) noexcep
 
 [[nodiscard]] auto SkipListMemTable::put(std::string_view key, std::string_view value, memory::TLAB& tlab) noexcept
     -> PutResult {
-    if (should_flush()) {
+    const std::size_t used = memory_usage();
+    if (used >= stall_trigger_bytes_) {
+        return PutResult::StallNeeded;
+    }
+    if (used >= flush_trigger_bytes_) {
         return PutResult::FlushNeeded;
     }
     return insert_node(key, value, ValueType::TypeValue, random_height(), tlab) ? PutResult::Ok
@@ -217,7 +221,11 @@ void SkipListMemTable::link_node(SkipListNode* new_node, Splice& splice) noexcep
 }
 
 [[nodiscard]] auto SkipListMemTable::remove(std::string_view key, memory::TLAB& tlab) noexcept -> PutResult {
-    if (should_flush()) {
+    const std::size_t used = memory_usage();
+    if (used >= stall_trigger_bytes_) {
+        return PutResult::StallNeeded;
+    }
+    if (used >= flush_trigger_bytes_) {
         return PutResult::FlushNeeded;
     }
 
@@ -267,7 +275,6 @@ void SkipListMemTable::link_node(SkipListNode* new_node, Splice& splice) noexcep
 }
 
 [[nodiscard]] auto SkipListMemTable::should_flush() const noexcept -> bool {
-    const std::size_t used = memory_usage();
-    return used >= flush_trigger_bytes_ || used >= stall_trigger_bytes_;
+    return memory_usage() >= flush_trigger_bytes_;
 }
 } // namespace stratadb::memtable

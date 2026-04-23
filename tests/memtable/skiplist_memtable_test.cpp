@@ -196,13 +196,26 @@ TEST(SkipListMemTable, FlushThresholdBlocksWrites) {
     auto arena = make_arena();
     MemTableConfig cfg{};
     cfg.flush_trigger_bytes = 0;
-    cfg.stall_trigger_bytes = 0;
+    cfg.stall_trigger_bytes = std::numeric_limits<std::size_t>::max();
     auto memtable = make_memtable(arena, cfg);
     auto tlab = make_tlab(arena);
 
     EXPECT_TRUE(memtable.should_flush());
     EXPECT_EQ(memtable.put("blocked", "v", tlab), PutResult::FlushNeeded);
     EXPECT_EQ(memtable.remove("blocked", tlab), PutResult::FlushNeeded);
+}
+
+TEST(SkipListMemTable, StallThresholdReturnsStallNeeded) {
+    auto arena = make_arena();
+    MemTableConfig cfg{};
+    cfg.flush_trigger_bytes = std::numeric_limits<std::size_t>::max();
+    cfg.stall_trigger_bytes = 0;
+    auto memtable = make_memtable(arena, cfg);
+    auto tlab = make_tlab(arena);
+
+    EXPECT_FALSE(memtable.should_flush());
+    EXPECT_EQ(memtable.put("blocked", "v", tlab), PutResult::StallNeeded);
+    EXPECT_EQ(memtable.remove("blocked", tlab), PutResult::StallNeeded);
 }
 
 TEST(SkipListMemTable, MemoryUsageTracksSuccessfulInserts) {
