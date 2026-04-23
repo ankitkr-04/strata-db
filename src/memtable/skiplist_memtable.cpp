@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cstdio>
 #include <cstring>
 #include <limits>
 #include <new>
@@ -192,6 +193,10 @@ void SkipListMemTable::link_node(SkipListNode* new_node, Splice& splice) noexcep
     }
 
     const std::uint64_t seq = sequence_.fetch_add(1, std::memory_order_acq_rel);
+    if (seq > SkipListNode::MAX_SEQUENCE) [[unlikely]] {
+        std::fputs("SkipListMemTable sequence exceeded 56-bit trailer range\n", stderr);
+        std::terminate();
+    }
 
     SkipListNode* new_node = &SkipListNode::construct(mem, user_key, value, seq, type, height);
 

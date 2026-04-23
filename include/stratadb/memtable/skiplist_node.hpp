@@ -23,7 +23,8 @@ struct SkipListNode {
     static constexpr std::size_t PREFIX_BYTES = 7;
     static constexpr std::size_t TRAILER_BYTES = 8;
     static constexpr std::size_t TYPE_BITS = 8;
-    static constexpr std::uint64_t TYPE_MASK = 0xFF;
+    static constexpr std::uint64_t TYPE_MASK = (std::uint64_t{1} << TYPE_BITS) - 1;
+    static constexpr std::uint64_t MAX_SEQUENCE = std::numeric_limits<std::uint64_t>::max() >> TYPE_BITS;
     static constexpr std::size_t REQUIRED_ALIGNMENT = alignof(std::atomic<SkipListNode*>);
 
     std::uint32_t key_len_;
@@ -109,5 +110,10 @@ static_assert(offsetof(SkipListNode, prefix_) == SkipListNode::PREFIX_OFFSET,
 // — the allocator call-site is responsible for this.
 static_assert(alignof(SkipListNode) == SkipListNode::STRUCT_ALIGNMENT,
               "SkipListNode header alignment is 4; callers must request 8-byte alignment");
+
+static_assert(static_cast<std::uint64_t>(ValueType::TypeDeletion) <= SkipListNode::TYPE_MASK,
+              "ValueType::TypeDeletion must fit in trailer type bits");
+static_assert(static_cast<std::uint64_t>(ValueType::TypeValue) <= SkipListNode::TYPE_MASK,
+              "ValueType::TypeValue must fit in trailer type bits");
 
 } // namespace stratadb::memtable

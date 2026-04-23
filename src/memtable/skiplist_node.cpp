@@ -65,6 +65,7 @@ auto SkipListNode::construct(void* mem,
     assert(height >= 1);
     assert(user_key.size() <= static_cast<std::size_t>(MAX_U32) - TRAILER_BYTES);
     assert(value.size() <= static_cast<std::size_t>(MAX_U32));
+    assert(sequence <= MAX_SEQUENCE);
 
     auto* node = static_cast<SkipListNode*>(mem);
 
