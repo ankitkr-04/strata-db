@@ -89,9 +89,8 @@ auto SkipListMemTable::compare(const SkipListNode* node, std::string_view user_k
     return compare_impl(node, user_key, seq);
 };
 
-SkipListMemTable::SkipListMemTable(memory::Arena& arena, memory::EpochManager& epoch_manager) noexcept
+SkipListMemTable::SkipListMemTable(memory::Arena& arena) noexcept
     : arena_(arena)
-    , epoch_manager_(epoch_manager)
     , head_(make_head()) {
     if (!head_) {
         // Head allocation failure means the Arena itself is broken.

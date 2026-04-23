@@ -1,7 +1,6 @@
 #pragma once
 
 #include "stratadb/memory/arena.hpp"
-#include "stratadb/memory/epoch_manager.hpp"
 #include "stratadb/memory/tlab.hpp"
 #include "stratadb/memtable/memtable_concept.hpp"
 #include "stratadb/memtable/skiplist_node.hpp"
@@ -19,7 +18,7 @@ class SkipListMemTable {
     static constexpr std::uint8_t MAX_HEIGHT = 12;
     static constexpr std::uint8_t BRANCHING_FACTOR = 4; // 1 in 4 chance to increase height at each level
 
-    explicit SkipListMemTable(memory::Arena& arena, memory::EpochManager& epoch_manager) noexcept;
+    explicit SkipListMemTable(memory::Arena& arena) noexcept;
 
     ~SkipListMemTable() noexcept = default;
     SkipListMemTable(const SkipListMemTable&) = delete;
@@ -48,7 +47,6 @@ class SkipListMemTable {
     };
 
     memory::Arena& arena_;
-    memory::EpochManager& epoch_manager_;
     SkipListNode* head_;
 
     alignas(utils::CACHE_LINE_SIZE) std::atomic<std::uint64_t> sequence_{0};
