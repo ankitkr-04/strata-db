@@ -184,7 +184,7 @@ auto Arena::create(const config::MemoryConfig& config) noexcept -> std::expected
     }
 
     // optional prefault
-    if (effective_config.prefault) {
+    if (effective_config.prefault_on_init) {
         prefault_memory(ptr, total);
     }
 

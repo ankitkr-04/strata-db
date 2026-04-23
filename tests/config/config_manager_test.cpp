@@ -2,6 +2,7 @@
 #include "stratadb/memory/epoch_manager.hpp"
 
 #include <atomic>
+#include <cstdint>
 #include <gtest/gtest.h>
 #include <thread>
 #include <vector>
@@ -133,7 +134,7 @@ TEST(ConfigManagerTest, ConcurrentReadWrite) {
 
         start.store(true, std::memory_order_release);
 
-        for (int i = 0; i < NUM_WRITES; ++i) {
+        for (std::uint32_t i = 0; i < static_cast<std::uint32_t>(NUM_WRITES); ++i) {
             MutableConfig cfg{};
             cfg.background_compaction_threads = i;
 
@@ -181,7 +182,7 @@ TEST(ConfigManagerTest, NoUseAfterFreeStress) {
     threads.emplace_back([&] {
         EpochManager::ThreadRegistrationGuard local_tg(epoch);
 
-        for (int i = 0; i < ITERS; ++i) {
+        for (std::uint32_t i = 0; i < static_cast<std::uint32_t>(ITERS); ++i) {
             MutableConfig cfg{};
             cfg.background_compaction_threads = i;
             mgr.update_mutable(cfg);

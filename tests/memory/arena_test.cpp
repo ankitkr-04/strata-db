@@ -228,7 +228,7 @@ TEST(Arena, NumaPolicyDoesNotCrash) {
 TEST(Arena, PrefaultDoesNotCrash) {
     MemoryConfig cfg;
     cfg.total_budget_bytes = 32ULL * 1024 * 1024;
-    cfg.prefault = true;
+    cfg.prefault_on_init = true;
 
     auto arena = Arena::create(cfg);
 
