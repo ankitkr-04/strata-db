@@ -58,9 +58,9 @@ inline auto xorshift64() noexcept -> std::uint64_t {
         return cmp;
 
     const std::uint64_t node_seq = node->sequence_number();
-    if (node_seq < seq) {
+    if (node_seq > seq) {
         return -1;
-    } else if (node_seq > seq) {
+    } else if (node_seq < seq) {
         return +1;
     }
     return 0;
