@@ -20,7 +20,12 @@ static_assert(TRAILER_BYTES == sizeof(std::uint64_t), "Trailer must be exactly 8
 
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
 auto SkipListNode::allocation_size(std::uint8_t height, std::size_t user_key_len, std::size_t val_len) noexcept
+
     -> std::size_t {
+
+    if (height == 0) [[unlikely]] {
+        return 0;
+    }
 
     const std::size_t tower_bytes = static_cast<std::size_t>(height) * sizeof(std::atomic<SkipListNode*>);
 
