@@ -1,8 +1,10 @@
 #pragma once
 
+#include "stratadb/config/memtable_config.hpp"
 #include "stratadb/memory/arena.hpp"
 #include "stratadb/memory/tlab.hpp"
 #include "stratadb/memtable/memtable_concept.hpp"
+#include "stratadb/memtable/memtable_result.hpp"
 #include "stratadb/memtable/skiplist_node.hpp"
 #include "stratadb/utils/hardware.hpp"
 
@@ -13,12 +15,14 @@
 #include <string_view>
 
 namespace stratadb::memtable {
+
 class SkipListMemTable {
   public:
     static constexpr std::uint8_t MAX_HEIGHT = 12;
     static constexpr std::uint8_t BRANCHING_FACTOR = 4; // 1 in 4 chance to increase height at each level
 
-    explicit SkipListMemTable(memory::Arena& arena) noexcept;
+    explicit SkipListMemTable(memory::Arena& arena,
+                  const config::MemTableConfig& config = config::MemTableConfig{}) noexcept;
 
     ~SkipListMemTable() noexcept = default;
     SkipListMemTable(const SkipListMemTable&) = delete;
@@ -26,19 +30,16 @@ class SkipListMemTable {
     SkipListMemTable(SkipListMemTable&&) = delete;
     auto operator=(SkipListMemTable&&) -> SkipListMemTable& = delete;
 
-    // put doesn't gate on flush state; callers must check should_flush() before calling and handle the flush if it
-    // returns true.
     [[nodiscard]] auto
-    put(std::string_view key, std::string_view value, memory::TLAB& tlab, std::size_t flush_trigger_bytes) noexcept
-        -> bool;
+    put(std::string_view key, std::string_view value, memory::TLAB& tlab) noexcept -> PutResult;
 
-    [[nodiscard]] auto remove(std::string_view key, memory::TLAB& tlab) noexcept -> bool;
+    [[nodiscard]] auto remove(std::string_view key, memory::TLAB& tlab) noexcept -> PutResult;
 
     [[nodiscard]] auto get(std::string_view key) const noexcept -> std::optional<std::string_view>;
 
     [[nodiscard]] auto memory_usage() const noexcept -> std::size_t;
 
-    [[nodiscard]] auto should_flush(std::size_t flush_trigger_bytes) const noexcept -> bool;
+    [[nodiscard]] auto should_flush() const noexcept -> bool;
 
   private:
     struct Splice {
@@ -47,19 +48,21 @@ class SkipListMemTable {
     };
 
     memory::Arena& arena_;
+    const std::size_t flush_trigger_bytes_;
+    const std::size_t stall_trigger_bytes_;
     SkipListNode* head_;
 
+    // Monotonic MVCC sequence for versions; larger means newer.
+    // A get() probes with UINT64_MAX to retrieve the newest visible version.
     alignas(utils::CACHE_LINE_SIZE) std::atomic<std::uint64_t> sequence_{0};
 
-    alignas(utils::CACHE_LINE_SIZE) std::atomic<std::size_t> memory_usage_{0};
+    // Writer updates sequence_ and memory_usage_ together; keep on one cache line.
+    std::atomic<std::size_t> memory_usage_{0};
 
   private:
     [[nodiscard]] auto make_head() noexcept -> SkipListNode*;
 
     [[nodiscard]] auto random_height() const noexcept -> std::uint8_t;
-
-    [[nodiscard]] static auto compare(const SkipListNode* node, std::string_view user_key, std::uint64_t seq) noexcept
-        -> int;
 
     [[nodiscard]] auto find_splice(std::string_view user_key, std::uint64_t seq) const noexcept -> Splice;
 

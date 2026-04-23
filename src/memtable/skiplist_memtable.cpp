@@ -21,7 +21,7 @@ thread_local std::uint64_t tl_rng = [] {
     return seed != 0 ? seed : UINT64_C(0xdeadbeefcafe1234);
 }();
 
-inline auto xorshift64() noexcept -> std::uint64_t {
+auto xorshift64() noexcept -> std::uint64_t {
     tl_rng ^= tl_rng >> 13;
     tl_rng ^= tl_rng << 7;
     tl_rng ^= tl_rng >> 17;
@@ -32,9 +32,9 @@ inline auto xorshift64() noexcept -> std::uint64_t {
     -> int {
 
     const std::string_view node_uk = node->user_key();
-    const std::size_t prefix_len = std::min({node_uk.size(), user_key.size(), std::size_t{7}});
+    const std::size_t prefix_len = std::min({node_uk.size(), user_key.size(), SkipListNode::PREFIX_BYTES});
 
-    int cmp = std::memcmp(node->prefix_, user_key.data(), prefix_len);
+    int cmp = std::memcmp(node->prefix_.data(), user_key.data(), prefix_len);
 
     if (cmp == 0) {
         const bool node_beyond = node_uk.size() > prefix_len;
@@ -42,7 +42,7 @@ inline auto xorshift64() noexcept -> std::uint64_t {
 
         if (node_beyond || srch_beyond) {
             const std::size_t min_len = std::min(node_uk.size(), user_key.size());
-            cmp = std::memcmp(node_uk.data(), user_key.data(), min_len);
+            cmp = std::memcmp(node_uk.data() + prefix_len, user_key.data() + prefix_len, min_len - prefix_len);
         }
 
         if (cmp == 0) {
@@ -68,8 +68,10 @@ inline auto xorshift64() noexcept -> std::uint64_t {
 
 [[nodiscard]] auto walk_forward(SkipListNode* cur, int level, std::string_view user_key, std::uint64_t seq) noexcept
     -> std::pair<SkipListNode*, SkipListNode*> {
+    const std::size_t level_index = static_cast<std::size_t>(level);
+
     while (true) {
-        SkipListNode* next = cur->next_nodes()[level].load(std::memory_order_acquire);
+        SkipListNode* next = cur->next_nodes()[level_index].load(std::memory_order_acquire);
         if (!next) {
             return {cur, nullptr};
         }
@@ -85,12 +87,10 @@ inline auto xorshift64() noexcept -> std::uint64_t {
 
 } // namespace
 
-auto SkipListMemTable::compare(const SkipListNode* node, std::string_view user_key, std::uint64_t seq) noexcept -> int {
-    return compare_impl(node, user_key, seq);
-};
-
-SkipListMemTable::SkipListMemTable(memory::Arena& arena) noexcept
+SkipListMemTable::SkipListMemTable(memory::Arena& arena, const config::MemTableConfig& config) noexcept
     : arena_(arena)
+    , flush_trigger_bytes_(config.flush_trigger_bytes)
+    , stall_trigger_bytes_(config.stall_trigger_bytes)
     , head_(make_head()) {
     if (!head_) {
         // Head allocation failure means the Arena itself is broken.
@@ -102,20 +102,20 @@ SkipListMemTable::SkipListMemTable(memory::Arena& arena) noexcept
 auto SkipListMemTable::make_head() noexcept -> SkipListNode* {
     const std::size_t sz = SkipListNode::allocation_size(MAX_HEIGHT, 0, 0);
 
-    void* mem = arena_.allocate_aligned(sz, 8);
+    void* mem = arena_.allocate_aligned(sz, SkipListNode::REQUIRED_ALIGNMENT);
     if (!mem) {
         return nullptr;
     }
 
     auto* head = static_cast<SkipListNode*>(mem);
-    head->key_len_ = 8;
+    head->key_len_ = SkipListNode::TRAILER_BYTES;
     head->val_len_ = 0;
     head->height_ = MAX_HEIGHT;
-    std::memset(head->prefix_, 0, 7);
+    std::memset(head->prefix_.data(), 0, SkipListNode::PREFIX_BYTES);
 
-    auto* tower = head->next_nodes();
+    auto tower = head->next_nodes();
     for (std::uint8_t i = 0; i < MAX_HEIGHT; ++i) {
-        new (tower + i) std::atomic<SkipListNode*>{nullptr};
+        new (&tower[i]) std::atomic<SkipListNode*>{nullptr};
     }
 
     return head;
@@ -185,7 +185,7 @@ void SkipListMemTable::link_node(SkipListNode* new_node, Splice& splice) noexcep
         return false;
     }
 
-    void* mem = tlab.allocate(size, 8);
+    void* mem = tlab.allocate(size, SkipListNode::REQUIRED_ALIGNMENT);
 
     if (!mem) {
         return false;
@@ -193,12 +193,7 @@ void SkipListMemTable::link_node(SkipListNode* new_node, Splice& splice) noexcep
 
     const std::uint64_t seq = sequence_.fetch_add(1, std::memory_order_acq_rel);
 
-    SkipListNode* new_node = SkipListNode::construct(mem, user_key, value, seq, type, height);
-    if (!new_node) {
-        // Construction failure means the input was invalid (e.g., key/value too large).
-        // Treat as OOM since the caller has no meaningful recovery path.
-        return false;
-    }
+    SkipListNode* new_node = &SkipListNode::construct(mem, user_key, value, seq, type, height);
 
     Splice splice = find_splice(user_key, seq);
     link_node(new_node, splice);
@@ -207,18 +202,21 @@ void SkipListMemTable::link_node(SkipListNode* new_node, Splice& splice) noexcep
     return true;
 };
 
-[[nodiscard]] auto SkipListMemTable::put(std::string_view key,
-                                         std::string_view value,
-                                         memory::TLAB& tlab,
-                                         std::size_t flush_trigger_bytes) noexcept -> bool {
-    if (should_flush(flush_trigger_bytes)) {
-        return false;
+[[nodiscard]] auto SkipListMemTable::put(std::string_view key, std::string_view value, memory::TLAB& tlab) noexcept
+    -> PutResult {
+    if (should_flush()) {
+        return PutResult::FlushNeeded;
     }
-    return insert_node(key, value, ValueType::TypeValue, random_height(), tlab);
+    return insert_node(key, value, ValueType::TypeValue, random_height(), tlab) ? PutResult::Ok
+                                                                                  : PutResult::OutOfMemory;
 }
 
-[[nodiscard]] auto SkipListMemTable::remove(std::string_view key, memory::TLAB& tlab) noexcept -> bool {
-    return insert_node(key, {}, ValueType::TypeDeletion, 1, tlab);
+[[nodiscard]] auto SkipListMemTable::remove(std::string_view key, memory::TLAB& tlab) noexcept -> PutResult {
+    if (should_flush()) {
+        return PutResult::FlushNeeded;
+    }
+
+    return insert_node(key, {}, ValueType::TypeDeletion, 1, tlab) ? PutResult::Ok : PutResult::OutOfMemory;
 }
 [[nodiscard]] auto SkipListMemTable::get(std::string_view key) const noexcept -> std::optional<std::string_view> {
     const std::uint64_t k_max_seq = std::numeric_limits<std::uint64_t>::max();
@@ -226,9 +224,10 @@ void SkipListMemTable::link_node(SkipListNode* new_node, Splice& splice) noexcep
     const SkipListNode* cur = head_;
 
     for (int level = MAX_HEIGHT - 1; level >= 0; --level) {
+        const std::size_t level_index = static_cast<std::size_t>(level);
 
         while (true) {
-            const SkipListNode* next = cur->next_nodes()[level].load(std::memory_order_acquire);
+            const SkipListNode* next = cur->next_nodes()[level_index].load(std::memory_order_acquire);
             if (!next) {
                 break;
             }
@@ -262,7 +261,8 @@ void SkipListMemTable::link_node(SkipListNode* new_node, Splice& splice) noexcep
     return memory_usage_.load(std::memory_order_relaxed);
 }
 
-[[nodiscard]] auto SkipListMemTable::should_flush(std::size_t flush_trigger_bytes) const noexcept -> bool {
-    return memory_usage() >= flush_trigger_bytes;
+[[nodiscard]] auto SkipListMemTable::should_flush() const noexcept -> bool {
+    const std::size_t used = memory_usage();
+    return used >= flush_trigger_bytes_ || used >= stall_trigger_bytes_;
 }
 } // namespace stratadb::memtable

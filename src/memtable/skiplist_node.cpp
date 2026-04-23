@@ -1,8 +1,6 @@
 #include "stratadb/memtable/skiplist_node.hpp"
 
-#include <algorithm>
 #include <cassert>
-#include <cstring>
 #include <limits>
 #include <new>
 
@@ -10,12 +8,9 @@ namespace stratadb::memtable {
 
 namespace {
 constexpr std::size_t MAX_SIZE = std::numeric_limits<std::size_t>::max();
-constexpr std::size_t TRAILER_BYTES = 8;
-constexpr std::size_t TYPE_BITS = 8;
-constexpr std::uint64_t TYPE_MASK = 0xFF;
-constexpr std::size_t PREFIX_BYTES = 7;
+constexpr std::uint32_t MAX_U32 = std::numeric_limits<std::uint32_t>::max();
 
-static_assert(TRAILER_BYTES == sizeof(std::uint64_t), "Trailer must be exactly 8 bytes");
+static_assert(SkipListNode::TRAILER_BYTES == sizeof(std::uint64_t), "Trailer must be exactly 8 bytes");
 } // namespace
 
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
@@ -31,6 +26,14 @@ auto SkipListNode::allocation_size(std::uint8_t height, std::size_t user_key_len
 
     if (user_key_len > MAX_SIZE - TRAILER_BYTES) [[unlikely]] {
         return 0; // Prevent overflow
+    }
+
+    if (user_key_len > static_cast<std::size_t>(MAX_U32) - TRAILER_BYTES) [[unlikely]] {
+        return 0;
+    }
+
+    if (val_len > MAX_U32) [[unlikely]] {
+        return 0;
     }
 
     const std::size_t ikey_bytes = user_key_len + TRAILER_BYTES;
@@ -51,57 +54,17 @@ auto SkipListNode::allocation_size(std::uint8_t height, std::size_t user_key_len
     return total;
 }
 
-auto SkipListNode::next_nodes() noexcept -> std::atomic<SkipListNode*>* {
-    return reinterpret_cast<std::atomic<SkipListNode*>*>(this + 1);
-}
-
-auto SkipListNode::next_nodes() const noexcept -> const std::atomic<SkipListNode*>* {
-    return reinterpret_cast<const std::atomic<SkipListNode*>*>(this + 1);
-}
-
-static inline auto payload_start(const SkipListNode* n) noexcept -> const char* {
-    return reinterpret_cast<const char*>(n->next_nodes() + n->height_);
-}
-
-auto SkipListNode::internal_key() const noexcept -> std::string_view {
-    return {payload_start(this), key_len_};
-}
-
-auto SkipListNode::user_key() const noexcept -> std::string_view {
-    assert(key_len_ >= TRAILER_BYTES);
-    return {payload_start(this), key_len_ - TRAILER_BYTES};
-}
-
-auto SkipListNode::value() const noexcept -> std::string_view {
-    const char* value_ptr = payload_start(this) + key_len_;
-    return {value_ptr, val_len_};
-}
-
-static inline auto decode_trailer(const SkipListNode* n) noexcept -> std::uint64_t {
-    assert(n->key_len_ >= TRAILER_BYTES);
-    const char* trailer_ptr = payload_start(n) + (n->key_len_ - TRAILER_BYTES);
-    std::uint64_t packed{};
-    std::memcpy(&packed, trailer_ptr, sizeof(packed));
-    return packed;
-}
-
-auto SkipListNode::sequence_number() const noexcept -> std::uint64_t {
-    return decode_trailer(this) >> TYPE_BITS;
-}
-
-auto SkipListNode::value_type() const noexcept -> ValueType {
-    return static_cast<ValueType>(decode_trailer(this) & TYPE_MASK);
-}
-
 auto SkipListNode::construct(void* mem,
                              std::string_view user_key,
                              std::string_view value,
                              std::uint64_t sequence,
                              ValueType type,
-                             std::uint8_t height) noexcept -> SkipListNode* {
+                             std::uint8_t height) noexcept -> SkipListNode& {
     assert(mem != nullptr);
-    assert((reinterpret_cast<std::uintptr_t>(mem) % 8) == 0);
+    assert((reinterpret_cast<std::uintptr_t>(mem) % REQUIRED_ALIGNMENT) == 0);
     assert(height >= 1);
+    assert(user_key.size() <= static_cast<std::size_t>(MAX_U32) - TRAILER_BYTES);
+    assert(value.size() <= static_cast<std::size_t>(MAX_U32));
 
     auto* node = static_cast<SkipListNode*>(mem);
 
@@ -112,17 +75,17 @@ auto SkipListNode::construct(void* mem,
 
     // Zero-padded prefix copy
     const std::size_t copy_len = std::min(user_key.size(), PREFIX_BYTES);
-    std::memcpy(node->prefix_, user_key.data(), copy_len);
+    std::memcpy(node->prefix_.data(), user_key.data(), copy_len);
     if (copy_len < PREFIX_BYTES) {
-        std::memset(node->prefix_ + copy_len, '\0', PREFIX_BYTES - copy_len);
+        std::memset(node->prefix_.data() + copy_len, '\0', PREFIX_BYTES - copy_len);
     }
 
-    std::atomic<SkipListNode*>* tower = node->next_nodes();
+    auto tower = node->next_nodes();
     for (std::uint8_t i = 0; i < height; ++i) {
-        new (tower + i) std::atomic<SkipListNode*>{nullptr};
+        new (&tower[i]) std::atomic<SkipListNode*>{nullptr};
     }
 
-    char* payload = reinterpret_cast<char*>(tower + height);
+    char* payload = reinterpret_cast<char*>(tower.data() + height);
 
     // Copy User Key
     std::memcpy(payload, user_key.data(), user_key.size());
@@ -134,7 +97,7 @@ auto SkipListNode::construct(void* mem,
     // Copy Value
     std::memcpy(payload + ikey_len, value.data(), value.size());
 
-    return node;
+    return *node;
 }
 
 } // namespace stratadb::memtable

@@ -42,8 +42,8 @@ constexpr std::size_t kTlabSize = 2ULL * 1024 * 1024;
     // Adjust this constructor if your TLAB type is exposed differently.
     return TLAB{arena};
 }
-[[nodiscard]] auto make_memtable(Arena& arena) -> SkipListMemTable {
-    return SkipListMemTable{arena};
+[[nodiscard]] auto make_memtable(Arena& arena, const MemTableConfig& cfg = MemTableConfig{}) -> SkipListMemTable {
+    return SkipListMemTable{arena, cfg};
 }
 
 [[nodiscard]] auto big_string(char ch, std::size_t n) -> std::string {
@@ -53,9 +53,9 @@ constexpr std::size_t kTlabSize = 2ULL * 1024 * 1024;
 // ---------------- SkipListNode tests ----------------
 
 TEST(SkipListNode, LayoutAndOffsets) {
-    static_assert(sizeof(SkipListNode) == SKIPLIST_NODE_HEADER_SIZE);
-    static_assert(offsetof(SkipListNode, prefix_) == SKIPLIST_NODE_PREFIX_OFFSET);
-    static_assert(alignof(SkipListNode) == SKIPLIST_NNODE_ALIGNMENT_STRUCT);
+    static_assert(sizeof(SkipListNode) == SkipListNode::HEADER_SIZE);
+    static_assert(offsetof(SkipListNode, prefix_) == SkipListNode::PREFIX_OFFSET);
+    static_assert(alignof(SkipListNode) == SkipListNode::STRUCT_ALIGNMENT);
 
     EXPECT_EQ(sizeof(SkipListNode), 16u);
     EXPECT_EQ(offsetof(SkipListNode, prefix_), 9u);
@@ -87,8 +87,8 @@ TEST(SkipListNode, ConstructAndDecodeSmallKey) {
 
     mem = aligned;
 
-    auto* node = SkipListNode::construct(mem, key, value, seq, type, height);
-    ASSERT_NE(node, nullptr);
+    auto& node_ref = SkipListNode::construct(mem, key, value, seq, type, height);
+    auto* node = &node_ref;
 
     EXPECT_EQ(node->user_key(), key);
     EXPECT_EQ(node->internal_key().substr(0, key.size()), key);
@@ -116,13 +116,13 @@ TEST(SkipListNode, ConstructAndDecodeLongKeyPrefix) {
 
     mem = aligned;
 
-    auto* node = SkipListNode::construct(mem, key, value, 7, ValueType::TypeDeletion, 1);
-    ASSERT_NE(node, nullptr);
+    auto& node_ref = SkipListNode::construct(mem, key, value, 7, ValueType::TypeDeletion, 1);
+    auto* node = &node_ref;
 
     EXPECT_EQ(node->user_key(), key);
     EXPECT_EQ(node->sequence_number(), 7u);
     EXPECT_EQ(node->value_type(), ValueType::TypeDeletion);
-    EXPECT_EQ(std::memcmp(node->prefix_, key.data(), 7), 0);
+    EXPECT_EQ(std::memcmp(node->prefix_.data(), key.data(), SkipListNode::PREFIX_BYTES), 0);
 }
 
 TEST(SkipListNode, NextNodesAreInitializedToNull) {
@@ -142,10 +142,10 @@ TEST(SkipListNode, NextNodesAreInitializedToNull) {
 
     mem = aligned;
 
-    auto* node = SkipListNode::construct(mem, key, value, 99, ValueType::TypeValue, height);
-    ASSERT_NE(node, nullptr);
+    auto& node_ref = SkipListNode::construct(mem, key, value, 99, ValueType::TypeValue, height);
+    auto* node = &node_ref;
 
-    auto* tower = node->next_nodes();
+    auto tower = node->next_nodes();
     for (std::uint8_t i = 0; i < height; ++i) {
         EXPECT_EQ(tower[i].load(std::memory_order_relaxed), nullptr);
     }
@@ -171,8 +171,8 @@ TEST(SkipListMemTable, PutGetAndOverwriteLatestWins) {
     auto memtable = make_memtable(arena);
     auto tlab = make_tlab(arena);
 
-    ASSERT_TRUE(memtable.put("k1", "v1", tlab, std::numeric_limits<std::size_t>::max()));
-    ASSERT_TRUE(memtable.put("k1", "v2", tlab, std::numeric_limits<std::size_t>::max()));
+    ASSERT_EQ(memtable.put("k1", "v1", tlab), PutResult::Ok);
+    ASSERT_EQ(memtable.put("k1", "v2", tlab), PutResult::Ok);
 
     auto got = memtable.get("k1");
     ASSERT_TRUE(got.has_value());
@@ -185,19 +185,23 @@ TEST(SkipListMemTable, RemoveCreatesTombstone) {
     auto memtable = make_memtable(arena);
     auto tlab = make_tlab(arena);
 
-    ASSERT_TRUE(memtable.put("dead", "alive", tlab, std::numeric_limits<std::size_t>::max()));
-    ASSERT_TRUE(memtable.remove("dead", tlab));
+    ASSERT_EQ(memtable.put("dead", "alive", tlab), PutResult::Ok);
+    ASSERT_EQ(memtable.remove("dead", tlab), PutResult::Ok);
 
     EXPECT_FALSE(memtable.get("dead").has_value());
 }
 
 TEST(SkipListMemTable, FlushThresholdBlocksWrites) {
     auto arena = make_arena();
-    auto memtable = make_memtable(arena);
+    MemTableConfig cfg{};
+    cfg.flush_trigger_bytes = 0;
+    cfg.stall_trigger_bytes = 0;
+    auto memtable = make_memtable(arena, cfg);
     auto tlab = make_tlab(arena);
 
-    EXPECT_TRUE(memtable.should_flush(0));
-    EXPECT_FALSE(memtable.put("blocked", "v", tlab, 0));
+    EXPECT_TRUE(memtable.should_flush());
+    EXPECT_EQ(memtable.put("blocked", "v", tlab), PutResult::FlushNeeded);
+    EXPECT_EQ(memtable.remove("blocked", tlab), PutResult::FlushNeeded);
 }
 
 TEST(SkipListMemTable, MemoryUsageTracksSuccessfulInserts) {
@@ -206,8 +210,8 @@ TEST(SkipListMemTable, MemoryUsageTracksSuccessfulInserts) {
     auto tlab = make_tlab(arena);
 
     const auto before = memtable.memory_usage();
-    ASSERT_TRUE(memtable.put("a", "1", tlab, std::numeric_limits<std::size_t>::max()));
-    ASSERT_TRUE(memtable.put("b", "2", tlab, std::numeric_limits<std::size_t>::max()));
+    ASSERT_EQ(memtable.put("a", "1", tlab), PutResult::Ok);
+    ASSERT_EQ(memtable.put("b", "2", tlab), PutResult::Ok);
     const auto after = memtable.memory_usage();
 
     EXPECT_GT(after, before);
@@ -221,7 +225,7 @@ TEST(SkipListMemTable, LongKeyRoundTrip) {
     const std::string key = big_string('k', 64);
     const std::string value = big_string('v', 128);
 
-    ASSERT_TRUE(memtable.put(key, value, tlab, std::numeric_limits<std::size_t>::max()));
+    ASSERT_EQ(memtable.put(key, value, tlab), PutResult::Ok);
 
     auto got = memtable.get(key);
     ASSERT_TRUE(got.has_value());
@@ -237,7 +241,7 @@ TEST(SkipListMemTable, LargeBatchRoundTrip) {
     for (std::size_t i = 0; i < n; ++i) {
         const auto key = "key_" + std::to_string(i);
         const auto value = "val_" + std::to_string(i);
-        ASSERT_TRUE(memtable.put(key, value, tlab, std::numeric_limits<std::size_t>::max()));
+        ASSERT_EQ(memtable.put(key, value, tlab), PutResult::Ok);
     }
 
     for (std::size_t i = 0; i < n; ++i) {
@@ -263,7 +267,7 @@ TEST(SkipListMemTable, ConcurrentUniqueInserts) {
             for (std::size_t i = 0; i < per_thread; ++i) {
                 const auto key = "t" + std::to_string(t) + "_k" + std::to_string(i);
                 const auto value = "v" + std::to_string(i);
-                ASSERT_TRUE(memtable.put(key, value, tlab, std::numeric_limits<std::size_t>::max()));
+                ASSERT_EQ(memtable.put(key, value, tlab), PutResult::Ok);
             }
         });
     }
@@ -294,7 +298,7 @@ TEST(SkipListMemTable, ConcurrentSameKeyLastWriterVisible) {
         workers[t] = std::thread([&, t] {
             auto tlab = make_tlab(arena);
             const auto value = "v" + std::to_string(t);
-            ASSERT_TRUE(memtable.put("shared", value, tlab, std::numeric_limits<std::size_t>::max()));
+            ASSERT_EQ(memtable.put("shared", value, tlab), PutResult::Ok);
         });
     }
 
