@@ -1,23 +1,37 @@
-# RULES:
-# Select type STRICTLY based on intent:
-# - feat: new functionality
-# - fix: bug fix
-# - refactor: internal change, no behavior change
-# - perf: performance improvement
-# - docs: documentation only
-# - test: tests added/changed
-# - build/chore: tooling, config, deps
+# Conventional Commit Template (Systems Projects)
 
-# If NOT adding new behavior → DO NOT use feat
+# TYPE
+# feat      = new user-visible functionality
+# fix       = bug / race / crash / correctness issue
+# refactor  = internal change, no behavior change
+# perf      = latency / throughput / allocation improvement
+# docs      = documentation only
+# test      = tests added/changed
+# build     = build / cmake / ci / compiler flags
+# chore     = maintenance only
+# style     = formatting only
+# revert    = revert previous commit
 
-# Scope = subsystem (memtable, skiplist, tlab, allocator)
+# RULE:
+# If behavior does NOT change → never use feat
 
-# Focus:
-# - Explain WHY, not WHAT
-# - Mention concurrency/memory/perf impact if relevant
-# - No generic phrases like "improve", "update"
+# NEW FILE RULE
+# header / interface only      → refactor
+# real new capability          → feat
+# optimization structure       → perf / refactor
+# test scaffold                → test
 
-<type>(<scope>): <summary <=60 chars>
+# SCOPE
+# Use subsystem, not filename
+# Good: memtable, skiplist, wal, allocator, epoch
+# Bad: code, misc, skiplist_node.hpp
+
+# MULTIPLE FILES / FUNCTIONS
+# Commit by ONE reason, not file count
+# If one WHY → one commit
+# If different WHYs → split commits
+
+<type>(<scope>): <summary <= 60 chars>
 
 - Why:
 - Design decision:
