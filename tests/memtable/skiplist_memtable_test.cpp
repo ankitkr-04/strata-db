@@ -54,9 +54,9 @@ constexpr std::size_t kTlabSize = 2ULL * 1024 * 1024;
 // ---------------- SkipListNode tests ----------------
 
 TEST(SkipListNode, LayoutAndOffsets) {
-    static_assert(sizeof(SkipListNode) == SkipListNode::HEADER_SIZE);
-    static_assert(offsetof(SkipListNode, prefix_) == SkipListNode::PREFIX_OFFSET);
-    static_assert(alignof(SkipListNode) == SkipListNode::STRUCT_ALIGNMENT);
+    static_assert(sizeof(SkipListNode) == SkipListNode::header_size());
+    static_assert(offsetof(SkipListNode, prefix_) == SkipListNode::prefix_offset());
+    static_assert(alignof(SkipListNode) == SkipListNode::struct_alignment());
 
     EXPECT_EQ(sizeof(SkipListNode), 16u);
     EXPECT_EQ(offsetof(SkipListNode, prefix_), 9u);

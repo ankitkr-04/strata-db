@@ -9,6 +9,7 @@
 #include <cstring>
 #include <limits>
 #include <new>
+#include <type_traits>
 #include <span>
 #include <string_view>
 
@@ -17,9 +18,6 @@ namespace stratadb::memtable {
 enum class ValueType : std::uint8_t { TypeDeletion = 0x00, TypeValue = 0x01 };
 
 struct SkipListNode {
-    static constexpr std::size_t HEADER_SIZE = 16;
-    static constexpr std::size_t PREFIX_OFFSET = 9;
-    static constexpr std::size_t STRUCT_ALIGNMENT = 4;
     static constexpr std::size_t PREFIX_BYTES = 7;
     static constexpr std::size_t TRAILER_BYTES = 8;
     static constexpr std::size_t TYPE_BITS = 8;
@@ -30,56 +28,48 @@ struct SkipListNode {
     std::uint32_t key_len_;
     std::uint32_t val_len_;
     std::uint8_t height_;
-    std::array<char, PREFIX_BYTES> prefix_{};
+    std::array<unsigned char, PREFIX_BYTES> prefix_{};
+
+    [[nodiscard]] static constexpr auto header_size() noexcept -> std::size_t {
+        return sizeof(SkipListNode);
+    }
+
+    [[nodiscard]] static constexpr auto prefix_offset() noexcept -> std::size_t {
+        return offsetof(SkipListNode, prefix_);
+    }
+
+    [[nodiscard]] static constexpr auto struct_alignment() noexcept -> std::size_t {
+        return alignof(SkipListNode);
+    }
 
     [[nodiscard]] auto next_nodes() noexcept -> std::span<std::atomic<SkipListNode*>> {
-        auto* ptr = reinterpret_cast<std::atomic<SkipListNode*>*>(this + 1);
-        return {ptr, height_};
+        return {tower_ptr(), height_};
     }
 
     [[nodiscard]] auto next_nodes() const noexcept -> std::span<const std::atomic<SkipListNode*>> {
-        const auto* ptr = reinterpret_cast<const std::atomic<SkipListNode*>*>(this + 1);
-        return {ptr, height_};
+        return {tower_ptr(), height_};
     }
 
     [[nodiscard]] auto internal_key() const noexcept -> std::string_view {
-        const auto* tower = reinterpret_cast<const std::atomic<SkipListNode*>*>(this + 1);
-        const auto* payload = reinterpret_cast<const char*>(tower + height_);
-        return {payload, key_len_};
+        return {payload_ptr(), key_len_};
     }
 
     [[nodiscard]] auto user_key() const noexcept -> std::string_view {
         assert(key_len_ >= TRAILER_BYTES);
-        const auto* tower = reinterpret_cast<const std::atomic<SkipListNode*>*>(this + 1);
-        const auto* payload = reinterpret_cast<const char*>(tower + height_);
-        return {payload, key_len_ - TRAILER_BYTES};
+        return {payload_ptr(), key_len_ - TRAILER_BYTES};
     }
 
     [[nodiscard]] auto value() const noexcept -> std::string_view {
-        const auto* tower = reinterpret_cast<const std::atomic<SkipListNode*>*>(this + 1);
-        const auto* payload = reinterpret_cast<const char*>(tower + height_);
-        const char* value_ptr = payload + key_len_;
+        const char* value_ptr = payload_ptr() + key_len_;
         return {value_ptr, val_len_};
     }
 
     [[nodiscard]] auto value_type() const noexcept -> ValueType {
-        assert(key_len_ >= TRAILER_BYTES);
-        const auto* tower = reinterpret_cast<const std::atomic<SkipListNode*>*>(this + 1);
-        const auto* payload = reinterpret_cast<const char*>(tower + height_);
-        const char* trailer_ptr = payload + (key_len_ - TRAILER_BYTES);
-        std::uint64_t packed{};
-        std::memcpy(&packed, trailer_ptr, sizeof(packed));
-        return static_cast<ValueType>(packed & TYPE_MASK);
+        return static_cast<ValueType>(unpack_trailer() & TYPE_MASK);
     }
 
     [[nodiscard]] auto sequence_number() const noexcept -> std::uint64_t {
-        assert(key_len_ >= TRAILER_BYTES);
-        const auto* tower = reinterpret_cast<const std::atomic<SkipListNode*>*>(this + 1);
-        const auto* payload = reinterpret_cast<const char*>(tower + height_);
-        const char* trailer_ptr = payload + (key_len_ - TRAILER_BYTES);
-        std::uint64_t packed{};
-        std::memcpy(&packed, trailer_ptr, sizeof(packed));
-        return packed >> TYPE_BITS;
+        return unpack_trailer() >> TYPE_BITS;
     }
 
     [[nodiscard]] auto is_tombstone() const noexcept -> bool {
@@ -96,23 +86,44 @@ struct SkipListNode {
                           std::uint64_t sequence,
                           ValueType type,
                           std::uint8_t height) noexcept -> SkipListNode&;
+
+  private:
+    [[nodiscard]] auto tower_ptr() noexcept -> std::atomic<SkipListNode*>* {
+        return reinterpret_cast<std::atomic<SkipListNode*>*>(this + 1);
+    }
+
+    [[nodiscard]] auto tower_ptr() const noexcept -> const std::atomic<SkipListNode*>* {
+        return reinterpret_cast<const std::atomic<SkipListNode*>*>(this + 1);
+    }
+
+    [[nodiscard]] auto payload_ptr() const noexcept -> const char* {
+        return reinterpret_cast<const char*>(tower_ptr() + height_);
+    }
+
+    [[nodiscard]] auto unpack_trailer() const noexcept -> std::uint64_t {
+        assert(key_len_ >= TRAILER_BYTES);
+        const char* trailer_ptr = payload_ptr() + (key_len_ - TRAILER_BYTES);
+        std::uint64_t packed{};
+        std::memcpy(&packed, trailer_ptr, sizeof(packed));
+        return packed;
+    }
 };
 
 // The header must be exactly 16 bytes so next_nodes() (which returns
 // (this + 1)) lands on offset 16 — a natural 8-byte-aligned boundary
 // required by std::atomic<SkipListNode*>.
-static_assert(sizeof(SkipListNode) == SkipListNode::HEADER_SIZE,
+static_assert(sizeof(SkipListNode) == SkipListNode::header_size(),
               "SkipListNode header must be exactly 16 bytes; check for unexpected padding");
 
 // prefix_ must start at offset 9, filling the 7-byte alignment hole
 // that would otherwise be dead padding before the 8-byte atomic array.
-static_assert(offsetof(SkipListNode, prefix_) == SkipListNode::PREFIX_OFFSET,
+static_assert(offsetof(SkipListNode, prefix_) == SkipListNode::prefix_offset(),
               "prefix_ must occupy offsets 9–15 (the 7-byte alignment hole)");
 
 // Alignment of the struct itself is 4 (driven by uint32_t).
 // Allocations must be requested with alignment 8 (for the atomic tower)
 // — the allocator call-site is responsible for this.
-static_assert(alignof(SkipListNode) == SkipListNode::STRUCT_ALIGNMENT,
+static_assert(alignof(SkipListNode) == SkipListNode::struct_alignment(),
               "SkipListNode header alignment is 4; callers must request 8-byte alignment");
 
 static_assert(static_cast<std::uint64_t>(ValueType::TypeDeletion) <= SkipListNode::TYPE_MASK,
