@@ -31,9 +31,6 @@ struct SkipListNode {
     [[nodiscard]] static auto
     allocation_size(std::uint8_t height, std::size_t user_key_len, std::size_t val_len) noexcept -> std::size_t;
 
-    [[nodiscard]] static auto
-    allocation_size(std::uint8_t height, std::uint32_t key_len, std::uint32_t val_len) noexcept -> std::size_t;
-
     [[nodiscard]] static auto construct(void* mem,
                                         std::string_view key,
                                         std::string_view value,

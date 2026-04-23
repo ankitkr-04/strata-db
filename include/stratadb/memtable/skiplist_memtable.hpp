@@ -41,6 +41,8 @@ class SkipListMemTable {
     [[nodiscard]] auto should_flush(std::size_t flush_trigger_bytes) const noexcept -> bool;
 
   private:
+    [[nodiscard]]auto make_head() noexcept -> SkipListNode*;
+
     [[nodiscard]] auto random_height() const noexcept -> std::uint8_t;
 
     [[nodiscard]] auto compare(const SkipListNode* node, std::string_view user_key, std::uint64_t seq) const noexcept
