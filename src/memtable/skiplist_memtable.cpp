@@ -172,5 +172,42 @@ void SkipListMemTable::link_node(SkipListNode* new_node, Splice& splice) noexcep
     }
 };
 
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+[[nodiscard]] auto SkipListMemTable::insert_node(std::string_view user_key,
+                                                 std::string_view value,
+                                                 ValueType type,
+                                                 std::uint8_t height,
+                                                 memory::TLAB& tlab) noexcept -> bool {
+
+    const std::size_t size = SkipListNode::allocation_size(height, user_key.size(), value.size());
+
+    if (size == 0) {
+        // Integer overflow in size calculation; treat as OOM.
+        return false;
+    }
+
+    void* mem = tlab.allocate(size, 8);
+
+    if (!mem) {
+        return false;
+    }
+
+    const std::uint64_t seq = sequence_.fetch_add(1, std::memory_order_acq_rel);
+
+    SkipListNode* new_node = SkipListNode::construct(mem, user_key, value, seq, type, height);
+    if (!new_node) {
+        // Construction failure means the input was invalid (e.g., key/value too large).
+        // Treat as OOM since the caller has no meaningful recovery path.
+        return false;
+    }
+
+    Splice splice = find_splice(user_key, seq);
+    link_node(new_node, splice);
+
+    memory_usage_.fetch_add(size, std::memory_order_relaxed);
+    return true;
+};
+
+
 
 } // namespace stratadb::memtable
