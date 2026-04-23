@@ -21,8 +21,9 @@ class SkipListMemTable {
     static constexpr std::uint8_t MAX_HEIGHT = 12;
     static constexpr std::uint8_t BRANCHING_FACTOR = 4; // 1 in 4 chance to increase height at each level
 
+    // noexcept by design: head allocation failure is treated as unrecoverable and terminates.
     explicit SkipListMemTable(memory::Arena& arena,
-                  const config::MemTableConfig& config = config::MemTableConfig{}) noexcept;
+                              const config::MemTableConfig& config = config::MemTableConfig{}) noexcept;
 
     ~SkipListMemTable() noexcept = default;
     SkipListMemTable(const SkipListMemTable&) = delete;
@@ -30,38 +31,37 @@ class SkipListMemTable {
     SkipListMemTable(SkipListMemTable&&) = delete;
     auto operator=(SkipListMemTable&&) -> SkipListMemTable& = delete;
 
-    [[nodiscard]] auto
-    put(std::string_view key, std::string_view value, memory::TLAB& tlab) noexcept -> PutResult;
+    [[nodiscard]] auto put(std::string_view key, std::string_view value, memory::TLAB& tlab) noexcept -> PutResult;
 
     [[nodiscard]] auto remove(std::string_view key, memory::TLAB& tlab) noexcept -> PutResult;
 
-    [[nodiscard("Arena views become invalid after Arena::reset")]] auto
-    get(std::string_view key) const noexcept -> std::optional<std::string_view>;
+    [[nodiscard("Arena views become invalid after Arena::reset")]] auto get(std::string_view key) const noexcept
+        -> std::optional<std::string_view>;
 
     [[nodiscard]] auto memory_usage() const noexcept -> std::size_t;
 
     [[nodiscard]] auto should_flush() const noexcept -> bool;
 
     struct EntryView {
-      std::string_view key;
-      std::string_view value;
-      std::uint64_t sequence;
-      ValueType type;
+        std::string_view key;
+        std::string_view value;
+        std::uint64_t sequence;
+        ValueType type;
     };
 
     template <typename Visitor>
     void scan(Visitor&& visitor) const {
-      const SkipListNode* node = head_->next_nodes()[0].load(std::memory_order_acquire);
-      while (node != nullptr) {
-        visitor(EntryView{
-          .key = node->user_key(),
-          .value = node->value(),
-          .sequence = node->sequence_number(),
-          .type = node->value_type(),
-        });
+        const SkipListNode* node = head_->next_nodes()[0].load(std::memory_order_acquire);
+        while (node != nullptr) {
+            visitor(EntryView{
+                .key = node->user_key(),
+                .value = node->value(),
+                .sequence = node->sequence_number(),
+                .type = node->value_type(),
+            });
 
-        node = node->next_nodes()[0].load(std::memory_order_acquire);
-      }
+            node = node->next_nodes()[0].load(std::memory_order_acquire);
+        }
     }
 
   private:

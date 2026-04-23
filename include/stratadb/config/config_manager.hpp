@@ -12,11 +12,12 @@
 namespace stratadb::config {
 
 enum class ConfigError : std::uint8_t {
-  OutOfMemory,
+    OutOfMemory,
 };
 
 class ConfigManager {
   public:
+    // noexcept by design: construction treats OOM as unrecoverable and terminates.
     ConfigManager(ImmutableConfig imm, MutableConfig mut, memory::EpochManager& epoch_mgr) noexcept;
 
     ~ConfigManager() noexcept;
