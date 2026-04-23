@@ -43,8 +43,8 @@ class Arena {
     };
 
     [[nodiscard]] auto memory_used() const noexcept -> std::size_t {
-      // allocate_block/allocate_aligned maintain offset_ <= total_budget_bytes.
-      return offset_.load(std::memory_order_relaxed);
+        // allocate_block/allocate_aligned maintain offset_ <= total_budget_bytes.
+        return offset_.load(std::memory_order_relaxed);
     }
 
     [[nodiscard]] auto remaining() const noexcept -> std::size_t {
@@ -54,6 +54,8 @@ class Arena {
   private:
     // base must be page-aligned and size >= config.total_budget_bytes
     explicit Arena(std::byte* base, const config::MemoryConfig& config) noexcept;
+
+    [[nodiscard]] auto bump_allocate(std::size_t size, std::size_t alignment) noexcept -> std::size_t;
 
   private:
     std::byte* base_{nullptr};

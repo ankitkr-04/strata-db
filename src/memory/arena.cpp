@@ -177,41 +177,10 @@ auto Arena::create(const config::MemoryConfig& config) noexcept -> std::expected
     return Arena(reinterpret_cast<std::byte*>(ptr), effective_config);
 }
 
-auto Arena::allocate_block(std::size_t min_size) noexcept -> std::span<std::byte> {
-    if (!base_) [[unlikely]] {
-        return {};
-    }
-
-    std::size_t size = (min_size > config_.tlab_size_bytes) ? min_size : config_.tlab_size_bytes;
-
-    if (!utils::align_up_checked(size, config_.block_alignment_bytes, size)) [[unlikely]] {
-        return {};
-    }
-
-    std::size_t old = offset_.load(std::memory_order_relaxed);
-
-    while (true) {
-        std::size_t aligned_offset = 0;
-        if (!utils::align_up_checked(old, config_.block_alignment_bytes, aligned_offset)) [[unlikely]] {
-            return {};
-        }
-
-        if (config_.total_budget_bytes < size || aligned_offset > config_.total_budget_bytes - size) [[unlikely]] {
-            return {};
-        }
-
-        const std::size_t next = aligned_offset + size;
-        if (offset_.compare_exchange_weak(old, next, std::memory_order_acq_rel, std::memory_order_relaxed)) {
-            return {base_ + aligned_offset, size};
-        }
-    }
-}
-
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
-auto Arena::allocate_aligned(std::size_t size, std::size_t alignment) noexcept -> void* {
-    assert(std::has_single_bit(alignment));
+auto Arena::bump_allocate(std::size_t size, std::size_t alignment) noexcept -> std::size_t {
     if (!base_ || !std::has_single_bit(alignment)) [[unlikely]] {
-        return nullptr;
+        return std::numeric_limits<std::size_t>::max();
     }
 
     std::size_t old = offset_.load(std::memory_order_relaxed);
@@ -219,18 +188,48 @@ auto Arena::allocate_aligned(std::size_t size, std::size_t alignment) noexcept -
     while (true) {
         std::size_t aligned_offset = 0;
         if (!utils::align_up_checked(old, alignment, aligned_offset)) [[unlikely]] {
-            return nullptr;
+            return std::numeric_limits<std::size_t>::max();
         }
 
         if (config_.total_budget_bytes < size || aligned_offset > config_.total_budget_bytes - size) [[unlikely]] {
-            return nullptr;
+            return std::numeric_limits<std::size_t>::max();
         }
 
         const std::size_t next = aligned_offset + size;
         if (offset_.compare_exchange_weak(old, next, std::memory_order_acq_rel, std::memory_order_relaxed)) {
-            return base_ + aligned_offset;
+            return aligned_offset;
         }
     }
+}
+
+auto Arena::allocate_block(std::size_t min_size) noexcept -> std::span<std::byte> {
+    std::size_t size = (min_size > config_.tlab_size_bytes) ? min_size : config_.tlab_size_bytes;
+
+    if (!utils::align_up_checked(size, config_.block_alignment_bytes, size)) [[unlikely]] {
+        return {};
+    }
+
+    const std::size_t aligned_offset = bump_allocate(size, config_.block_alignment_bytes);
+    if (aligned_offset == std::numeric_limits<std::size_t>::max()) [[unlikely]] {
+        return {};
+    }
+
+    return {base_ + aligned_offset, size};
+}
+
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+auto Arena::allocate_aligned(std::size_t size, std::size_t alignment) noexcept -> void* {
+    assert(std::has_single_bit(alignment));
+    if (!std::has_single_bit(alignment)) [[unlikely]] {
+        return nullptr;
+    }
+
+    const std::size_t aligned_offset = bump_allocate(size, alignment);
+    if (aligned_offset == std::numeric_limits<std::size_t>::max()) [[unlikely]] {
+        return nullptr;
+    }
+
+    return base_ + aligned_offset;
 }
 
 auto Arena::reset() noexcept -> void {
