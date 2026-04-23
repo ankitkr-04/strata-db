@@ -4,6 +4,7 @@
 #include "stratadb/memtable/skiplist_memtable.hpp"
 #include "stratadb/memtable/skiplist_node.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstring>
@@ -251,6 +252,32 @@ TEST(SkipListMemTable, LargeBatchRoundTrip) {
         ASSERT_TRUE(got.has_value());
         EXPECT_EQ(*got, value);
     }
+}
+
+TEST(SkipListMemTable, ScanProvidesSortedForwardView) {
+    auto arena = make_arena();
+    auto memtable = make_memtable(arena);
+    auto tlab = make_tlab(arena);
+
+    ASSERT_EQ(memtable.put("b", "1", tlab), PutResult::Ok);
+    ASSERT_EQ(memtable.put("a", "1", tlab), PutResult::Ok);
+    ASSERT_EQ(memtable.put("b", "2", tlab), PutResult::Ok);
+
+    std::vector<std::string> keys;
+    std::vector<std::uint64_t> seqs;
+
+    memtable.scan([&](const SkipListMemTable::EntryView& entry) {
+        keys.emplace_back(entry.key);
+        seqs.push_back(entry.sequence);
+    });
+
+    ASSERT_EQ(keys.size(), 3u);
+    EXPECT_TRUE(std::is_sorted(keys.begin(), keys.end()));
+
+    // For the same user key, newer versions (higher sequence) appear first.
+    ASSERT_EQ(keys[1], "b");
+    ASSERT_EQ(keys[2], "b");
+    EXPECT_GT(seqs[1], seqs[2]);
 }
 
 TEST(SkipListMemTable, ConcurrentUniqueInserts) {

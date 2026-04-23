@@ -11,6 +11,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string_view>
 
@@ -40,6 +41,15 @@ class SkipListMemTable {
     [[nodiscard]] auto memory_usage() const noexcept -> std::size_t;
 
     [[nodiscard]] auto should_flush() const noexcept -> bool;
+
+    struct EntryView {
+      std::string_view key;
+      std::string_view value;
+      std::uint64_t sequence;
+      ValueType type;
+    };
+
+    void scan(const std::function<void(const EntryView&)>& visitor) const;
 
   private:
     struct Splice {

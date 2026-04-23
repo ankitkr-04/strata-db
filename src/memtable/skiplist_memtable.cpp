@@ -265,4 +265,22 @@ void SkipListMemTable::link_node(SkipListNode* new_node, Splice& splice) noexcep
     const std::size_t used = memory_usage();
     return used >= flush_trigger_bytes_ || used >= stall_trigger_bytes_;
 }
+
+void SkipListMemTable::scan(const std::function<void(const EntryView&)>& visitor) const {
+    if (!visitor) {
+        return;
+    }
+
+    const SkipListNode* node = head_->next_nodes()[0].load(std::memory_order_acquire);
+    while (node != nullptr) {
+        visitor(EntryView{
+            .key = node->user_key(),
+            .value = node->value(),
+            .sequence = node->sequence_number(),
+            .type = node->value_type(),
+        });
+
+        node = node->next_nodes()[0].load(std::memory_order_acquire);
+    }
+}
 } // namespace stratadb::memtable
