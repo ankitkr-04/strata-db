@@ -4,11 +4,12 @@ Author: Ankit Kumar
 Date: 2026-04-20
 
 ## Last Updated
-2026-04-21
+2026-04-23
 
 ## Change Summary
 - 2026-04-20: Created architecture documentation for Arena allocation, NUMA/page strategy behavior, and validation/perf workflow.
 - 2026-04-21: Reworked into full systems-level format, corrected strict-local NUMA failure semantics, added explicit thread interaction and memory lifecycle diagrams, and expanded failure and validation matrices.
+- 2026-04-23: Added related-document navigation for TLAB and memtable consumers.Synced option names and allocation guards to current code (`prefault_on_init`, power-of-two alignment checks, and overflow-safe bump path)
 
 ## Purpose
 Document how Arena reserves and serves bounded memory to concurrent subsystems, how configuration drives mapping and placement behavior, and which guarantees and failure modes callers must handle.
@@ -16,7 +17,7 @@ Document how Arena reserves and serves bounded memory to concurrent subsystems, 
 ## Overview
 Arena is a monotonic allocator over one mapped region. It is configured once at creation and then serves concurrent allocations through an atomic offset cursor. The design separates one-time environment setup from steady-state allocation:
 
-1. Create phase: mmap strategy selection, optional NUMA policy application, optional prefault.
+1. Create phase: mmap strategy selection, optional NUMA policy application, optional prefault (`prefault_on_init`).
 2. Allocation phase: lock-free offset reservations through compare_exchange loops.
 3. Reuse phase: explicit reset rewinds the cursor; there is no per-allocation free.
 
@@ -56,7 +57,7 @@ Memory lifecycle model:
 | --- | --- | --- |
 | Page strategy | Standard4K, Huge2M/Huge1G with strict or opportunistic modes | Controls mmap flag sequence and fallback behavior |
 | NUMA policy | UMA, Interleaved, StrictLocal | Controls mbind mode and failure handling |
-| Prefault | prefault bool | Performs up-front memory touch by memset |
+| Prefault | `prefault_on_init` | Performs up-front memory touch by memset |
 | Block alignment | block_alignment_bytes | Defines alignment for block cursor movement |
 
 ## Data Flow
@@ -72,7 +73,7 @@ flowchart TD
   H -- yes --> I[munmap and return ArenaError.MbindFailed]
     H -- no --> J[fallback effective NUMA=UMA]
   G -- yes --> P0[keep configured NUMA policy]
-  J --> K[optional prefault]
+  J --> K[optional prefault_on_init]
   P0 --> K
   K --> L[Arena ready]
   L --> M[allocate_block or allocate_aligned]
@@ -105,7 +106,7 @@ flowchart TD
     [*] --> Unmapped
     Unmapped --> Mapped: Arena.create mmap success
     Mapped --> PlacementApplied: mbind success or UMA fallback
-    PlacementApplied --> Ready: optional prefault completed
+    PlacementApplied --> Ready: optional prefault_on_init completed
     Ready --> Allocating: allocate_block or allocate_aligned
     Allocating --> Ready: successful reservation
     Allocating --> Exhausted: budget bound hit
@@ -129,6 +130,7 @@ Threaded allocation paths need low-overhead reservation without allocator-global
 - allocate_block(min_size) allocates max(min_size, tlab_size_bytes), aligned to block_alignment_bytes.
 - allocate_aligned(size, alignment) reserves exactly size bytes at requested alignment.
 - reset() sets offset_ to zero.
+- Internal bump allocation validates power-of-two alignment and uses checked alignment math to avoid overflow wraparound.
 
 #### Concurrency Model
 Allocation APIs use one shared atomic cursor with CAS retry loops. There are no locks or per-thread ownership requirements for Arena itself.
@@ -145,7 +147,7 @@ Translate configuration policy into mapping and placement behavior.
 The same allocator must run on systems with different huge-page and NUMA capabilities.
 
 #### How It Works
-MemoryConfig drives page strategy, NUMA placement mode, prefault behavior, tlab_size_bytes, total_budget_bytes, and block alignment. Opportunistic page modes attempt huge pages and then fallback.
+MemoryConfig drives page strategy, NUMA placement mode, `prefault_on_init`, tlab_size_bytes, total_budget_bytes, and block alignment. Opportunistic page modes attempt huge pages and then fallback.
 
 #### Concurrency Model
 Policy is immutable during arena lifetime and not synchronized at allocation-time.
@@ -208,9 +210,10 @@ CAS retries can rise under contention, but no lock convoying is introduced.
 | Create fails with `MmapFailed` | Mapping fails for all attempted strategies | Arena unavailable | Reduce budget or use simpler page strategy |
 | Create fails with `OutOfMemory` | Kernel returns `ENOMEM` | Arena unavailable under pressure | Lower total budget or free system memory |
 | Create fails with `MbindFailed` | StrictLocal placement cannot be applied | Arena unavailable by policy | Use UMA or Interleaved policy where strict locality is not required |
-| Allocation returns empty span | Cursor crosses budget bound | Caller cannot obtain new block | Handle OOM path and/or increase budget |
+| Allocation returns empty span | Cursor crosses budget bound or block alignment is invalid/non-power-of-two | Caller cannot obtain new block | Handle OOM path and ensure `block_alignment_bytes` is power-of-two |
 | Aligned allocation returns nullptr | Invalid alignment or insufficient remaining capacity | Caller cannot obtain aligned allocation | Validate alignment and handle nullptr path |
 | Effective NUMA differs from requested Interleaved mode | mbind failure under Interleaved policy | Different locality behavior than requested | Inspect host NUMA support and runtime behavior |
+| Stale `string_view` after reset | Arena reset reuses prior ranges | Caller may observe invalid memtable views | Ensure no live memtable views survive Arena reset |
 
 ## Observability
 - Source of truth:
@@ -237,12 +240,12 @@ CAS retries can rise under contention, but no lock convoying is introduced.
 | ConcurrentAllocation | multi-threaded block reservation | CAS-based race-safe allocations |
 | RandomStress | randomized allocation sequence within capacity | Cursor accounting stability |
 | NumaPolicyDoesNotCrash | interleaved policy creation path | Availability under NUMA variability |
-| PrefaultDoesNotCrash | prefault creation path | Initialization robustness with prefault |
+| PrefaultDoesNotCrash | prefault_on_init creation path | Initialization robustness with prefault |
 
 ## Performance Characteristics
 | Path | Dominant Work | Notes |
 | --- | --- | --- |
-| create | mmap, optional mbind, optional memset prefault | One-time startup cost |
+| create | mmap, optional mbind, optional memset prefault_on_init | One-time startup cost |
 | allocate_block | alignment math and CAS loop | Contention-sensitive retry count |
 | allocate_aligned | alignment math and CAS loop | Similar contention profile to allocate_block |
 | reset | single atomic store | O(1) state rewind |
@@ -255,6 +258,11 @@ CAS retries can rise under contention, but no lock convoying is introduced.
 | 3 | Call allocate_block(min_size) for block clients | Arena created successfully | Aligned span or empty span |
 | 4 | Call allocate_aligned(size, alignment) for exact aligned reservation | Power-of-two alignment | Pointer or nullptr |
 | 5 | Call reset() only when caller-level lifecycle allows rewind | Caller can tolerate reusing previous region from start | Cursor rewound to zero |
+
+## Related Documents
+- [04-thread-local-allocation.md](04-thread-local-allocation.md)
+- [05-skiplist-memtable.md](05-skiplist-memtable.md)
+- [06-skiplist-node.md](06-skiplist-node.md)
 
 ## Notes
 - Not verified: strict-local mbind failure behavior in automated tests (current suite validates interleaved and prefault success paths).

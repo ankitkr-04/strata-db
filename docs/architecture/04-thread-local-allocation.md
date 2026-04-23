@@ -4,11 +4,12 @@ Author: Ankit Kumar
 Date: 2026-04-20
 
 ## Last Updated
-2026-04-21
+2026-04-23
 
 ## Change Summary
 - 2026-04-20: Created architecture documentation for TLAB fast-path allocation, refill behavior, and interaction with Arena and memory policy.
 - 2026-04-21: Reworked into full systems-level structure, corrected slow-path decision rules to match implementation, added explicit thread interaction and memory lifecycle diagrams, and expanded failure and validation coverage.
+- 2026-04-23: Added related-document navigation for skiplist memtable and node integration. Synced slow-path guards to current implementation, including overflow check on `size + alignment` before refill.
 
 ## Purpose
 Document how TLAB performs thread-local bump allocation, how it escalates to Arena on misses, and what correctness and performance trade-offs follow from the current implementation.
@@ -49,6 +50,7 @@ Memory lifecycle:
 | Global source | Arena allocate_block(...) and allocate_aligned(...) | Centralized budget control and cross-thread sharing |
 | Refill trigger | Fast-path bound check failure | Limits global interactions to block transitions for small allocations |
 | Alignment handling | (ptr + align - 1) & ~(align - 1) | Supports caller-required power-of-two alignment |
+| Overflow defense | `size > max - alignment` short-circuit | Prevents wraparound before refill request sizing |
 | Detach gate | detach() sets arena_ to nullptr | Prevents post-teardown use of backing Arena |
 
 | Allocation Path | Condition | Result |
@@ -145,6 +147,7 @@ Without this path, local exhaustion would either fail allocations too early or r
 - If arena_ is null, return nullptr.
 - Read tlab_size from Arena.
 - If size >= tlab_size / 2, call Arena::allocate_aligned directly.
+- If `size + alignment` would overflow `size_t`, fail with nullptr before refill.
 - Otherwise call refill(size + alignment) and retry allocate.
 - refill(min_size) requests a block from Arena::allocate_block(min_size) and updates current_block_ and block_end_ on success.
 
@@ -190,6 +193,7 @@ Explicit detach avoids dangling Arena access but requires callers to enforce cor
 | Excess slack memory | tlab_size_bytes too large for request distribution | More stranded memory per thread | Tune block size downward |
 | Incorrect sharing of one TLAB across threads | Caller misuse of ownership model | Data races on current_block_ and block_end_ | Keep one TLAB instance per thread context |
 | Allocation after detach | TLAB intentionally detached from Arena | All requests fail with nullptr | Guard caller flow with is_attached() where needed |
+| Refill size arithmetic overflow | `size + alignment` exceeds `size_t` | Allocation fails despite available arena budget | Keep request sizes bounded and validate caller inputs |
 | Invalid alignment argument | Alignment is not power of two | Debug assert and null return in checked path | Pass only power-of-two alignment values |
 
 ## Observability
@@ -232,6 +236,11 @@ Explicit detach avoids dangling Arena access but requires callers to enforce cor
 | 3 | Call allocate(size, alignment) | Power-of-two alignment | Returns aligned pointer or nullptr |
 | 4 | Handle nullptr path | OOM or detached allocator possible | No exceptions thrown by TLAB allocation APIs |
 | 5 | Call detach() before Arena retirement | Teardown phase | Future allocations fail safely instead of touching retired Arena |
+
+## Related Documents
+- [03-memory-arena.md](03-memory-arena.md)
+- [05-skiplist-memtable.md](05-skiplist-memtable.md)
+- [06-skiplist-node.md](06-skiplist-node.md)
 
 ## Notes
 - Not verified: measured contention impact of large-request direct Arena path at production thread counts.

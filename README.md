@@ -14,7 +14,7 @@ StrataDB is a systems-focused database engine project built in modern C++ with e
 | 0 | Foundation | Completed | Build system, toolchain, strict warnings, and GoogleTest integration are in place. |
 | 1 | Configuration and Concurrency | Completed | YAML-oriented configuration model with copy-and-publish mutable state plus epoch-based read safety. |
 | 2 | Memory Subsystem | Completed | NUMA-aware Arena plus thread-local allocation buffers (TLAB) implemented and tested. |
-| 3 | Lock-Free MemTable | In Progress | Concurrent in-memory index implementation has started, with lock-free skip list as the primary target. |
+| 3 | Lock-Free MemTable | In Progress | Skip-list memtable and node encoding are implemented with concurrent tests; flush integration and full phase completion remain in progress. |
 | 4 | Durability (WAL) | Planned | Sequential write-ahead log for crash recovery before MemTable visibility. |
 | 5 | Storage Layer (SSTables and io_uring) | Planned | Immutable on-disk tables, block cache, and asynchronous I/O path. |
 | 6 | Compaction | Planned | Background merge and tombstone cleanup to maintain read performance. |
@@ -29,7 +29,9 @@ StrataDB is a systems-focused database engine project built in modern C++ with e
 - Epoch reclamation mechanism with thread registration guards and deferred free pipeline.
 - Arena allocator with mmap-backed blocks, huge-page strategy fallback, and NUMA policy integration.
 - TLAB fast-path allocator backed by Arena refill semantics.
-- Unit test suites for config and memory subsystems.
+- SkipList memtable with `put`/`remove`/`get`/`scan`, threshold signaling, and lock-free insertion path.
+- SkipList node binary layout with packed sequence+type trailer and overflow-safe allocation sizing.
+- Unit test suites for config, memory, and memtable subsystems.
 
 ## Advanced Documentation
 Start here for architecture details beyond this README:
@@ -40,6 +42,8 @@ Start here for architecture details beyond this README:
 - [docs/architecture/02-configuration-management.md](docs/architecture/02-configuration-management.md)
 - [docs/architecture/03-memory-arena.md](docs/architecture/03-memory-arena.md)
 - [docs/architecture/04-thread-local-allocation.md](docs/architecture/04-thread-local-allocation.md)
+- [docs/architecture/05-skiplist-memtable.md](docs/architecture/05-skiplist-memtable.md)
+- [docs/architecture/06-skiplist-node.md](docs/architecture/06-skiplist-node.md)
 
 ## Build and Test Quickstart
 
@@ -62,9 +66,9 @@ ctest --output-on-failure --test-dir build
 ```
 
 ## Repository Layout
-- [include/stratadb](include/stratadb): public interfaces for config and memory subsystems.
+- [include/stratadb](include/stratadb): public interfaces for config, memory, and memtable subsystems.
 - [src](src): implementation source files.
-- [tests](tests): unit tests for configuration and memory components.
+- [tests](tests): unit tests for configuration, memory, and memtable components.
 - [docs/architecture](docs/architecture): deep architecture documentation.
 
 ## Design Direction

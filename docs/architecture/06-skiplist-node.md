@@ -8,6 +8,7 @@ Date: 2026-04-23
 
 ## Change Summary
 - 2026-04-23: Created architecture documentation for SkipListNode binary layout, alignment constraints, trailer encoding, overflow-safe sizing, and node lifecycle semantics.
+- 2026-04-23: Added related-document navigation and expanded node lifecycle linkage to memtable integration points.
 
 ## Purpose
 Explain the exact in-memory representation and invariants of `SkipListNode`, because this struct is the correctness-critical storage unit for key ordering, value visibility, and skip-list linkage.
@@ -201,6 +202,11 @@ Accessor simplicity improves call sites, but all returned views are non-owning a
 | 3 | Call `construct(mem, key, value, seq, type, height)` | Sequence <= `MAX_SEQUENCE` | Fully initialized node |
 | 4 | Publish via skip-list link path | Correct synchronization in memtable | Concurrent readers can traverse node |
 | 5 | Read via accessors and `next_nodes()` | Node still alive in Arena | Zero-copy decoded views |
+
+## Related Documents
+- [03-memory-arena.md](03-memory-arena.md)
+- [04-thread-local-allocation.md](04-thread-local-allocation.md)
+- [05-skiplist-memtable.md](05-skiplist-memtable.md)
 
 ## Notes
 - Not verified: quantitative impact of prefix caching on real production key distributions.

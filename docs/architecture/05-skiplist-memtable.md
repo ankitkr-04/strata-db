@@ -8,6 +8,7 @@ Date: 2026-04-23
 
 ## Change Summary
 - 2026-04-23: Created architecture documentation for MemTable abstraction and SkipListMemTable implementation, including lock-free insertion flow, sequence/version ordering, memory thresholds, and validation coverage.
+- 2026-04-23: Added related-document navigation and tightened contract-level notes for `IsMemTable` interoperability.
 
 ## Purpose
 Document the in-memory write-path index model used by StrataDB in phase 3, including the generic MemTable contract and the concrete skip-list implementation.
@@ -271,6 +272,12 @@ Cheap checks and explicit status codes, but threshold crossing is advisory and m
 | 4 | Serve reads through `get(key)` | Arena remains valid | Latest non-tombstone value or `nullopt` |
 | 5 | Iterate with `scan(visitor)` when flushing | Visitor handles duplicate keys/versions | Sorted key stream with sequence metadata |
 | 6 | Trigger flush/stall from `PutResult` or `should_flush()` | Caller policy configured | Controlled write-path backpressure |
+
+## Related Documents
+- [02-configuration-management.md](02-configuration-management.md)
+- [03-memory-arena.md](03-memory-arena.md)
+- [04-thread-local-allocation.md](04-thread-local-allocation.md)
+- [06-skiplist-node.md](06-skiplist-node.md)
 
 ## Notes
 - Not verified: formal linearizability proof for concurrent same-key writes.
