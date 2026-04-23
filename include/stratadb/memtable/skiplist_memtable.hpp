@@ -28,6 +28,8 @@ class SkipListMemTable {
     SkipListMemTable(SkipListMemTable&&) = delete;
     auto operator=(SkipListMemTable&&) -> SkipListMemTable& = delete;
 
+    // put doesn't gate on flush state; callers must check should_flush() before calling and handle the flush if it
+    // returns true.
     [[nodiscard]] auto
     put(std::string_view key, std::string_view value, memory::TLAB& tlab, std::size_t flush_trigger_bytes) noexcept
         -> bool;
@@ -41,25 +43,11 @@ class SkipListMemTable {
     [[nodiscard]] auto should_flush(std::size_t flush_trigger_bytes) const noexcept -> bool;
 
   private:
-    [[nodiscard]]auto make_head() noexcept -> SkipListNode*;
+    struct Splice {
+        SkipListNode* prev[SkipListMemTable::MAX_HEIGHT];
+        SkipListNode* next[SkipListMemTable::MAX_HEIGHT];
+    };
 
-    [[nodiscard]] auto random_height() const noexcept -> std::uint8_t;
-
-    [[nodiscard]] auto compare(const SkipListNode* node, std::string_view user_key, std::uint64_t seq) const noexcept
-        -> int;
-
-    [[nodiscard]] auto
-    find_splice(std::string_view user_key, std::uint64_t seq, SkipListNode* prev, SkipListNode* next) const noexcept;
-
-    void link_node(SkipListNode* new_node, SkipListNode* prev, SkipListNode* next) noexcept;
-
-    [[nodiscard]] auto insert_node(std::string_view user_key,
-                                   std::string_view value,
-                                   ValueType type,
-                                   std::uint8_t height,
-                                   memory::TLAB& tlab) noexcept -> bool;
-
-  private:
     memory::Arena& arena_;
     memory::EpochManager& epoch_manager_;
     SkipListNode* head_;
@@ -67,6 +55,24 @@ class SkipListMemTable {
     alignas(utils::CACHE_LINE_SIZE) std::atomic<std::uint64_t> sequence_{0};
 
     alignas(utils::CACHE_LINE_SIZE) std::atomic<std::size_t> memory_usage_{0};
+
+  private:
+    [[nodiscard]] auto make_head() noexcept -> SkipListNode*;
+
+    [[nodiscard]] auto random_height() const noexcept -> std::uint8_t;
+
+    [[nodiscard]] static auto compare(const SkipListNode* node, std::string_view user_key, std::uint64_t seq) noexcept
+        -> int;
+
+    [[nodiscard]] auto find_splice(std::string_view user_key, std::uint64_t seq) const noexcept -> Splice;
+
+    void link_node(SkipListNode* new_node, Splice& splice) noexcept;
+
+    [[nodiscard]] auto insert_node(std::string_view user_key,
+                                   std::string_view value,
+                                   ValueType type,
+                                   std::uint8_t height,
+                                   memory::TLAB& tlab) noexcept -> bool;
 };
 
 static_assert(IsMemTable<SkipListMemTable>, "SkipListMemTable does not satisfy the MemTable concept");
