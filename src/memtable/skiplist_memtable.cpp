@@ -33,7 +33,7 @@ auto xorshift64() noexcept -> std::uint64_t {
     -> int {
 
     const std::string_view node_uk = node->user_key();
-    const std::size_t prefix_len = std::min({node_uk.size(), user_key.size(), SkipListNode::PREFIX_BYTES});
+    const std::size_t prefix_len = std::min(std::min(node_uk.size(), user_key.size()), SkipListNode::PREFIX_BYTES);
 
     int cmp = std::memcmp(node->prefix_.data(), user_key.data(), prefix_len);
 
@@ -41,7 +41,7 @@ auto xorshift64() noexcept -> std::uint64_t {
         const bool node_beyond = node_uk.size() > prefix_len;
         const bool srch_beyond = user_key.size() > prefix_len;
 
-        if (node_beyond || srch_beyond) {
+        if (node_beyond || srch_beyond) [[likely]] {
             const std::size_t min_len = std::min(node_uk.size(), user_key.size());
             cmp = std::memcmp(node_uk.data() + prefix_len, user_key.data() + prefix_len, min_len - prefix_len);
         }
