@@ -8,10 +8,6 @@
 
 namespace stratadb::memtable {
 namespace {
-struct Splice {
-    SkipListNode* prev[SkipListMemTable::MAX_HEIGHT];
-    SkipListNode* next[SkipListMemTable::MAX_HEIGHT];
-};
 
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 thread_local std::uint64_t tl_rng = [] {
@@ -70,12 +66,28 @@ inline auto xorshift64() noexcept -> std::uint64_t {
     return 0;
 };
 
+[[nodiscard]] auto walk_forward(SkipListNode* cur, int level, std::string_view user_key, std::uint64_t seq) noexcept
+    -> std::pair<SkipListNode*, SkipListNode*> {
+    while (true) {
+        SkipListNode* next = cur->next_nodes()[level].load(std::memory_order_acquire);
+        if (!next) {
+            return {cur, nullptr};
+        }
+
+        const int cmp = compare_impl(next, user_key, seq);
+        if (cmp >= 0) {
+
+            return {cur, next};
+        }
+        cur = next;
+    }
+};
+
 } // namespace
 
-auto SkipListMemTable::compare(const SkipListNode* node, std::string_view user_key, std::uint64_t seq) const noexcept
-    -> int {
+auto SkipListMemTable::compare(const SkipListNode* node, std::string_view user_key, std::uint64_t seq) noexcept -> int {
     return compare_impl(node, user_key, seq);
-}
+};
 
 SkipListMemTable::SkipListMemTable(memory::Arena& arena, memory::EpochManager& epoch_manager) noexcept
     : arena_(arena)
@@ -86,7 +98,7 @@ SkipListMemTable::SkipListMemTable(memory::Arena& arena, memory::EpochManager& e
         // There is no meaningful recovery path; terminate early.
         std::terminate();
     }
-};
+}
 
 auto SkipListMemTable::make_head() noexcept -> SkipListNode* {
     const std::size_t sz = SkipListNode::allocation_size(MAX_HEIGHT, 0, 0);
@@ -109,5 +121,56 @@ auto SkipListMemTable::make_head() noexcept -> SkipListNode* {
 
     return head;
 };
+
+auto SkipListMemTable::random_height() const noexcept -> std::uint8_t {
+    std::uint8_t height = 1;
+    while (height < MAX_HEIGHT && (xorshift64() % BRANCHING_FACTOR) == 0) {
+        ++height;
+    }
+    return height;
+};
+
+[[nodiscard]] auto SkipListMemTable::find_splice(std::string_view user_key, std::uint64_t seq) const noexcept
+    -> Splice {
+    Splice splice{};
+    SkipListNode* cur = head_;
+
+    for (int level = MAX_HEIGHT - 1; level >= 0; --level) {
+        auto [prev, next] = walk_forward(cur, level, user_key, seq);
+        splice.prev[level] = prev;
+        splice.next[level] = next;
+        cur = prev;
+    }
+
+    return splice;
+};
+
+void SkipListMemTable::link_node(SkipListNode* new_node, Splice& splice) noexcept {
+    const std::string_view uk = new_node->user_key();
+    const std::uint64_t seq = new_node->sequence_number();
+    const std::uint8_t height = new_node->height_;
+
+    for (std::uint8_t level = 0; level < height; ++level) {
+        while (true) {
+            SkipListNode* expected_next = splice.next[level];
+            new_node->next_nodes()[level].store(expected_next, std::memory_order_relaxed);
+
+            const bool cas_ok =
+                splice.prev[level]->next_nodes()[level].compare_exchange_strong(expected_next,
+                                                                                new_node,
+                                                                                std::memory_order_release,
+                                                                                std::memory_order_acquire);
+
+            if (cas_ok) {
+                break;
+            }
+
+            auto [new_prev, new_next] = walk_forward(splice.prev[level], level, uk, seq);
+            splice.prev[level] = new_prev;
+            splice.next[level] = new_next;
+        }
+    }
+};
+
 
 } // namespace stratadb::memtable

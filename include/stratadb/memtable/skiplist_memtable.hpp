@@ -21,8 +21,7 @@ class SkipListMemTable {
 
     explicit SkipListMemTable(memory::Arena& arena, memory::EpochManager& epoch_manager) noexcept;
 
-    ~SkipListMemTable() noexcept;
-
+    ~SkipListMemTable() noexcept = default;
     SkipListMemTable(const SkipListMemTable&) = delete;
     auto operator=(const SkipListMemTable&) -> SkipListMemTable& = delete;
     SkipListMemTable(SkipListMemTable&&) = delete;
