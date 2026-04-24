@@ -26,10 +26,10 @@ struct NodeProfile {
 };
 
 inline constexpr std::array<NodeProfile, 4> kNodeProfiles{{
-    {.name="node_128b", .key_bytes=24, .value_bytes=48, .height=4},
-    {.name="node_256b", .key_bytes=32, .value_bytes=168, .height=4},
-    {.name="node_512b", .key_bytes=48, .value_bytes=408, .height=4},
-    {.name="node_1024b", .key_bytes=64, .value_bytes=904, .height=4},
+    {.name = "node_128b", .key_bytes = 24, .value_bytes = 48, .height = 4},
+    {.name = "node_256b", .key_bytes = 32, .value_bytes = 168, .height = 4},
+    {.name = "node_512b", .key_bytes = 48, .value_bytes = 408, .height = 4},
+    {.name = "node_1024b", .key_bytes = 64, .value_bytes = 904, .height = 4},
 }};
 
 [[nodiscard]] inline auto profile_from_index(int index) noexcept -> const NodeProfile& {
