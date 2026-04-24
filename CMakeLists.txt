@@ -15,6 +15,7 @@ option(STRATADB_ENABLE_UBSAN "Enable UBSan" OFF)
 option(STRATADB_ENABLE_TSAN "Enable ThreadSanitizer" OFF)
 option(STRATADB_ENABLE_LTO "Enable LTO" OFF)
 option(STRATADB_USE_MOLD "Use the mold linker when it is installed" ON)
+option(STRATADB_BUILD_BENCHMARKS "Build Google Benchmark executables" OFF) # Set to OFF by default
 
 if(STRATADB_USE_MOLD)
   find_program(STRATADB_MOLD_LINKER mold)
@@ -42,7 +43,7 @@ target_compile_options(stratadb_warnings INTERFACE
 # ------------------ Sanitizer Helper ------------------
 function(enable_sanitizers target)
   if(STRATADB_ENABLE_ASAN AND STRATADB_ENABLE_TSAN)
-     message(FATAL_ERROR "ASAN and TSAN cannot be enabled together")
+    message(FATAL_ERROR "ASAN and TSAN cannot be enabled together")
   endif()
   if(STRATADB_ENABLE_ASAN)
     target_compile_options(${target} PRIVATE -fsanitize=address)
@@ -96,22 +97,22 @@ if(STRATADB_ENABLE_LTO)
   set_property(TARGET stratadb PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
 endif()
 
+include(FetchContent)
+
 # ======================= TESTING ===========================
 
 enable_testing()
 
-include(FetchContent)
-
 set(INSTALL_GTEST OFF)
 
-FetchContent_Declare(
+fetchcontent_declare(
   googletest
   URL https://github.com/google/googletest/releases/download/v1.17.0/googletest-1.17.0.tar.gz
 )
 
 set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 
-FetchContent_MakeAvailable(googletest)
+fetchcontent_makeavailable(googletest)
 
 # ------------------ Test Executable ------------------
 add_executable(stratadb_tests
@@ -124,8 +125,8 @@ add_executable(stratadb_tests
 
 target_link_libraries(stratadb_tests
   PRIVATE
-    stratadb
-    GTest::gtest_main
+  stratadb
+  GTest::gtest_main
 )
 
 enable_mold_linker(stratadb_tests)
@@ -151,3 +152,76 @@ enable_sanitizers(stratadb_tests)
 # ------------------ Register Tests ------------------
 include(GoogleTest)
 gtest_discover_tests(stratadb_tests)
+
+# ===================== BENCHMARKING =======================
+
+if(STRATADB_BUILD_BENCHMARKS)
+  if(NOT CMAKE_BUILD_TYPE STREQUAL "Release")
+    message(WARNING "Benchmarks are intended to be built with -DCMAKE_BUILD_TYPE=Release")
+  endif()
+
+  add_library(stratadb_benchmark_flags INTERFACE)
+
+  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(stratadb_benchmark_flags INTERFACE -O3 -march=native)
+  endif()
+
+  fetchcontent_declare(
+    benchmark
+    URL https://github.com/google/benchmark/archive/refs/tags/v1.9.5.tar.gz
+  )
+
+  set(BENCHMARK_ENABLE_GTEST_TESTS OFF CACHE BOOL "" FORCE)
+  set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+  set(BENCHMARK_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+
+  fetchcontent_makeavailable(benchmark)
+
+  add_executable(allocator_bench
+    benchmarks/allocator_bench.cpp
+  )
+
+  target_link_libraries(allocator_bench
+    PRIVATE
+    stratadb
+    stratadb_warnings
+    stratadb_benchmark_flags
+    benchmark::benchmark
+    benchmark::benchmark_main
+  )
+
+  target_compile_features(allocator_bench PUBLIC cxx_std_26)
+  enable_mold_linker(allocator_bench)
+
+  add_executable(tlab_bench
+    benchmarks/tlab_bench.cpp
+  )
+
+  target_link_libraries(tlab_bench
+    PRIVATE
+    stratadb
+    stratadb_warnings
+    stratadb_benchmark_flags
+    benchmark::benchmark
+    benchmark::benchmark_main
+  )
+
+  target_compile_features(tlab_bench PUBLIC cxx_std_26)
+  enable_mold_linker(tlab_bench)
+
+  add_executable(page_bench
+    benchmarks/page_bench.cpp
+  )
+
+  target_link_libraries(page_bench
+    PRIVATE
+    stratadb
+    stratadb_warnings
+    stratadb_benchmark_flags
+    benchmark::benchmark
+    benchmark::benchmark_main
+  )
+
+  target_compile_features(page_bench PUBLIC cxx_std_26)
+  enable_mold_linker(page_bench)
+endif()
