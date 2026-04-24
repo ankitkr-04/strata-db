@@ -53,21 +53,11 @@ void run_allocator_iteration(AllocationMode mode,
                              int thread_count,
                              std::size_t per_thread_ops,
                              std::vector<WorkerResult>& results,
-                             std::size_t& bytes_touched) {
+                             std::size_t& bytes_touched,
+                             memory::Arena* arena) {
     const std::size_t node_size = profile.allocation_size();
     const std::size_t total_ops = per_thread_ops * static_cast<std::size_t>(thread_count);
     bytes_touched = total_ops * node_size;
-
-    std::unique_ptr<memory::Arena> arena;
-    if (mode != AllocationMode::BaselineNew) {
-        const std::size_t arena_capacity =
-            bytes_touched + (static_cast<std::size_t>(thread_count) * config::MemoryConfig::DEFAULT_TLAB_SIZE);
-        auto arena_exp = memory::Arena::create(make_arena_config(arena_capacity));
-        if (!arena_exp.has_value()) {
-            throw std::runtime_error("Arena::create failed during allocator benchmark setup");
-        }
-        arena = std::make_unique<memory::Arena>(std::move(arena_exp.value()));
-    }
 
     OneShotStartGate gate(thread_count);
     std::vector<std::thread> workers;
@@ -158,19 +148,47 @@ void run_benchmark(benchmark::State& state, AllocationMode mode, std::string_vie
 
     for (auto _ : state) {
         (void)_;
+
         state.PauseTiming();
+
         std::vector<WorkerResult> results(static_cast<std::size_t>(thread_count));
+
         std::size_t iteration_bytes = 0;
+
+        std::unique_ptr<memory::Arena> arena;
+
+        if (mode != AllocationMode::BaselineNew) {
+            const std::size_t node_size = profile.allocation_size();
+            const std::size_t total_ops = per_thread_ops * static_cast<std::size_t>(thread_count);
+
+            iteration_bytes = total_ops * node_size;
+
+            const std::size_t arena_capacity =
+                iteration_bytes + (static_cast<std::size_t>(thread_count) * config::MemoryConfig::DEFAULT_TLAB_SIZE);
+
+            auto arena_exp = memory::Arena::create(make_arena_config(arena_capacity));
+
+            if (!arena_exp.has_value()) {
+                throw std::runtime_error("Arena::create failed during benchmark setup");
+            }
+
+            arena = std::make_unique<memory::Arena>(std::move(arena_exp.value()));
+        }
+
         state.ResumeTiming();
 
-        run_allocator_iteration(mode, profile, thread_count, per_thread_ops, results, iteration_bytes);
+        run_allocator_iteration(mode, profile, thread_count, per_thread_ops, results, iteration_bytes, arena.get());
 
         state.PauseTiming();
+
         total_bytes += iteration_bytes;
+
         for (auto& result : results) {
             all_samples.insert(all_samples.end(), result.latency_samples_ns.begin(), result.latency_samples_ns.end());
         }
+
         cleanup_owned_allocations(results);
+
         state.ResumeTiming();
     }
 
@@ -178,8 +196,10 @@ void run_benchmark(benchmark::State& state, AllocationMode mode, std::string_vie
                            * static_cast<std::int64_t>(per_thread_ops);
 
     const auto latency = summarize_latencies(std::move(all_samples));
+
     state.SetItemsProcessed(total_ops);
     state.SetBytesProcessed(static_cast<std::int64_t>(total_bytes));
+
     state.counters["p50_ns"] = latency.p50_ns;
     state.counters["p99_ns"] = latency.p99_ns;
     state.counters["alloc_size_bytes"] = static_cast<double>(profile.allocation_size());
