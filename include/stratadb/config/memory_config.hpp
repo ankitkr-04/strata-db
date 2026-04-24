@@ -1,18 +1,17 @@
 #pragma once
 
 #include "stratadb/config/page_config.hpp"
+#include "stratadb/utils/bytes.hpp"
 
 #include <cstddef>
 
 namespace stratadb::config {
+using namespace stratadb::utils::bytes::literals;
 
 struct MemoryConfig {
-    static constexpr std::size_t KiB = 1024ULL;
-    static constexpr std::size_t MiB = KiB * 1024ULL;
-    static constexpr std::size_t GiB = MiB * 1024ULL;
 
-    static constexpr std::size_t DEFAULT_TOTAL_BUDGET = 1ULL * GiB;
-    static constexpr std::size_t DEFAULT_TLAB_SIZE = 2ULL * MiB;
+    static constexpr std::size_t DEFAULT_TOTAL_BUDGET = 1_GiB;
+    static constexpr std::size_t DEFAULT_TLAB_SIZE = 2_MiB;
     // Intentionally independent from ImmutableConfig::DEFAULT_BLOCK_SIZE_BYTES.
     // This controls allocator alignment, not SSTable block layout.
     static constexpr std::size_t DEFAULT_BLOCK_ALIGNMENT = 4096;
