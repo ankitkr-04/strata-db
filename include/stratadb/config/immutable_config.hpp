@@ -1,6 +1,7 @@
 #pragma once
 
 #include "stratadb/config/memory_config.hpp"
+#include "stratadb/config/wal_config.hpp"
 
 #include <cstddef>
 
@@ -13,6 +14,7 @@ struct ImmutableConfig {
     std::size_t block_size_bytes{DEFAULT_BLOCK_SIZE_BYTES};
 
     MemoryConfig memory_config{};
+    WalConfig wal_config{};
 };
 
 } // namespace stratadb::config
