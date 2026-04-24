@@ -285,5 +285,5 @@ void apply_thread_args(benchmark::Benchmark* b) {
 } // namespace
 } // namespace stratadb::bench
 
-BENCHMARK(stratadb::bench::BM_SharedCursorCASPerAlloc)->Apply(stratadb::bench::apply_thread_args);
-BENCHMARK(stratadb::bench::BM_TLABRefillCAS)->Apply(stratadb::bench::apply_thread_args);
+BENCHMARK(stratadb::bench::BM_SharedCursorCASPerAlloc)->Apply(stratadb::bench::apply_thread_args)->UseRealTime();
+BENCHMARK(stratadb::bench::BM_TLABRefillCAS)->Apply(stratadb::bench::apply_thread_args)->UseRealTime();

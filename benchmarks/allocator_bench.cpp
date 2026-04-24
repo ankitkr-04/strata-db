@@ -277,6 +277,6 @@ void apply_allocator_args(benchmark::Benchmark* b) {
 } // namespace
 } // namespace stratadb::bench
 
-BENCHMARK(stratadb::bench::BM_NewAllocate)->Apply(stratadb::bench::apply_allocator_args);
-BENCHMARK(stratadb::bench::BM_ArenaAllocate)->Apply(stratadb::bench::apply_allocator_args);
-BENCHMARK(stratadb::bench::BM_TLABAllocate)->Apply(stratadb::bench::apply_allocator_args);
+BENCHMARK(stratadb::bench::BM_NewAllocate)->Apply(stratadb::bench::apply_allocator_args)->UseRealTime();
+BENCHMARK(stratadb::bench::BM_ArenaAllocate)->Apply(stratadb::bench::apply_allocator_args)->UseRealTime();
+BENCHMARK(stratadb::bench::BM_TLABAllocate)->Apply(stratadb::bench::apply_allocator_args)->UseRealTime();
