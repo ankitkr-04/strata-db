@@ -36,7 +36,7 @@ namespace stratadb::wal {
         std::uint8_t generation_counters[TEARING_MATRIX_PADDED];
     } tearing_matrix;
 
-    // -cahce line N+1: Metadata for the payload, such as key lengths and operation types. This is separate from the
+    // -cache line N+1: Metadata for the payload, such as key lengths and operation types. This is separate from the
     // header SoA Metadata(128 bytes) is designed to fit within 2 cache lines, allowing for efficient access without
     // interfering with the tearing matrix.
     struct alignas(utils::CACHE_LINE_SIZE) VectorMetadata {
