@@ -30,14 +30,27 @@ namespace stratadb::wal {
         std::uint8_t padding[32];    // Pad strictly to 64 bytes
     } header;
 
-
-    //Cache line 1 to N: Scalable Tearing Matrix for atomicity detection. Each byte corresponds to a cache line in the payload.
-    struct alignas(utils::CACHE_LINE_SIZE)  TearingMatrix {
+    // Cache line 1 to N: Scalable Tearing Matrix for atomicity detection. Each byte corresponds to a cache line in the
+    // payload.
+    struct alignas(utils::CACHE_LINE_SIZE) TearingMatrix {
         std::uint8_t generation_counters[TEARING_MATRIX_PADDED];
     } tearing_matrix;
 
+    // -cahce line N+1: Metadata for the payload, such as key lengths and operation types. This is separate from the
+    // header SoA Metadata(128 bytes) is designed to fit within 2 cache lines, allowing for efficient access without
+    // interfering with the tearing matrix.
+    struct alignas(utils::CACHE_LINE_SIZE) VectorMetadata {
+        std::uint8_t opcodes[64];      // Insert/Delete/Commit flags
+        std::uint16_t key_lengths[32]; // Length of keys in payload
+    } metadata;
 
-    
+    // Remaining Cache Lines: Payload data, such as keys and values. The payload is designed to be as large as possible
+    // while still fitting within the block size after accounting for the header, tearing matrix, and metadata.
+    struct alignas(utils::CACHE_LINE_SIZE) Payload {
+        std::uint8_t data[PAYLOAD_BYTES];
+    } payload;
+
+    static_assert((BlockSize & (BlockSize - 1)) == 0, "BlockSize must be a power of two");
 };
 
 } // namespace stratadb::wal
