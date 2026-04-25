@@ -20,6 +20,24 @@ namespace stratadb::wal {
     static constexpr std::size_t METADATA_BYTES = 128;
 
     static constexpr std::size_t PAYLOAD_BYTES = BlockSize - HEADER_BYTES - TEARING_MATRIX_PADDED - METADATA_BYTES;
+
+    struct alignas(utils::CACHE_LINE_SIZE) Header {
+        std::uint64_t sequence_id;   // Global logical sequence number
+        std::uint64_t physical_lba;  // Detects misdirected I/O
+        std::uint32_t payload_crc32; // AVX-512 folded checksum
+        std::uint32_t header_crc32;  // Checksum of this header
+        std::uint64_t epoch_number;  // Ties back to EpochManager
+        std::uint8_t padding[32];    // Pad strictly to 64 bytes
+    } header;
+
+
+    //Cache line 1 to N: Scalable Tearing Matrix for atomicity detection. Each byte corresponds to a cache line in the payload.
+    struct alignas(utils::CACHE_LINE_SIZE)  TearingMatrix {
+        std::uint8_t generation_counters[TEARING_MATRIX_PADDED];
+    } tearing_matrix;
+
+
+    
 };
 
 } // namespace stratadb::wal
