@@ -10,6 +10,12 @@ class Arena;
 } // namespace stratadb::memory
 
 namespace stratadb::wal {
+namespace SectorSize {
+inline constexpr std::size_t LegacyHDD = 512;
+inline constexpr std::size_t StandardNVMe = 4096;
+inline constexpr std::size_t AdvancedFormat = 8192;
+inline constexpr std::size_t EnterpriseNVMe = 16384;
+} // namespace SectorSize
 
 struct StagedRecord {
     std::uint64_t sequence_id;
