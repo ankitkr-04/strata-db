@@ -3,7 +3,10 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
 #include <span>
+#include <vector>
+
 namespace stratadb::memory {
 class EpochManager;
 class Arena;
@@ -49,6 +52,8 @@ class WalStaging {
     memory::EpochManager& epoch_manager_;
     memory::Arena& staging_arena_;
     static thread_local WalBlock<BlockSize>* tls_current_block_;
+    std::mutex handoff_mutex_; // Protects the handoff of blocks from staging to harvesting
+    std::vector<WalBlock<BlockSize>*> ready_blocks_; // Blocks that are ready to be flushed to disk, protected by handoff_mutex_
 };
 
 } // namespace stratadb::wal
