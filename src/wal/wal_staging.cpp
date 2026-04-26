@@ -55,6 +55,7 @@ auto WalStaging<BlockSize>::stage_write(std::uint64_t sequence_id,
 
     // Copy key
     std::memcpy(payload_base + current_offset, key.data(), key.size_bytes());
+    current_offset += key.size_bytes();
 
     // Copy value
     std::memcpy(payload_base + current_offset, value.data(), value.size_bytes());
@@ -73,15 +74,15 @@ template <std::size_t BlockSize>
 auto WalStaging<BlockSize>::harvest_ready_blocks() noexcept -> void {
     std::vector<WalBlock<BlockSize>*> blocks_to_flush;
     {
-       std::lock_guard<std::mutex> lock(handoff_mutex_);
-       blocks_to_flush.swap(ready_blocks_);
+        std::lock_guard<std::mutex> lock(handoff_mutex_);
+        blocks_to_flush.swap(ready_blocks_);
     }
 
-    if(blocks_to_flush.empty()) {
+    if (blocks_to_flush.empty()) {
         return; // No blocks to flush
-     }
+    }
 
-     //send to IO_URING
+    // send to IO_URING
 };
 
 template class WalStaging<SectorSize::LegacyHDD>;
