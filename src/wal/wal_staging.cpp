@@ -70,7 +70,19 @@ auto WalStaging<BlockSize>::stage_write(std::uint64_t sequence_id,
 };
 
 template <std::size_t BlockSize>
-auto WalStaging<BlockSize>::harvest_ready_blocks() noexcept -> void {};
+auto WalStaging<BlockSize>::harvest_ready_blocks() noexcept -> void {
+    std::vector<WalBlock<BlockSize>*> blocks_to_flush;
+    {
+       std::lock_guard<std::mutex> lock(handoff_mutex_);
+       blocks_to_flush.swap(ready_blocks_);
+    }
+
+    if(blocks_to_flush.empty()) {
+        return; // No blocks to flush
+     }
+
+     //send to IO_URING
+};
 
 template class WalStaging<SectorSize::LegacyHDD>;
 template class WalStaging<SectorSize::StandardNVMe>;
