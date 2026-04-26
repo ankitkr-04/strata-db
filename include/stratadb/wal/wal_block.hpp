@@ -16,7 +16,8 @@ namespace stratadb::wal {
     static constexpr std::size_t TEARING_MATRIX_PADDED =
         (TEARING_MATRIX_BYTES + utils::CACHE_LINE_SIZE - 1) & ~(utils::CACHE_LINE_SIZE - 1);
 
-    static constexpr std::size_t HEADER_BYTES = 64;
+    static constexpr std::size_t HEADER_DATA_BYTES = 38; // Actual data in the header, excluding padding. This is used to calculate the payload size accurately.
+    static constexpr std::size_t HEADER_BYTES = utils::CACHE_LINE_SIZE; // Full header size including padding, aligned to cache line
     static constexpr std::size_t METADATA_BYTES = 128;
 
     static constexpr std::size_t PAYLOAD_BYTES = BlockSize - HEADER_BYTES - TEARING_MATRIX_PADDED - METADATA_BYTES;
@@ -27,7 +28,10 @@ namespace stratadb::wal {
         std::uint32_t payload_crc32; // AVX-512 folded checksum
         std::uint32_t header_crc32;  // Checksum of this header
         std::uint64_t epoch_number;  // Ties back to EpochManager
-        std::uint8_t padding[32];    // Pad strictly to 64 bytes
+        std::uint32_t payload_bytes_written; // Actual bytes of payload data, used for partial writes and recovery
+        std::uint16_t num_records; //2B: DB ops in this block, used for recovery and compaction
+
+        std::uint8_t padding[HEADER_BYTES - HEADER_DATA_BYTES]; // Pad the header to fill one cache line, ensuring the tearing matrix starts on a new cache line for atomicity detection.
     } header;
 
     // Cache line 1 to N: Scalable Tearing Matrix for atomicity detection. Each byte corresponds to a cache line in the
