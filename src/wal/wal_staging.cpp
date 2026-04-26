@@ -53,7 +53,10 @@ auto WalStaging<BlockSize>::stage_write(std::uint64_t sequence_id,
     auto current_offset = tls_current_block_->header.payload_bytes_written;
     auto current_record = tls_current_block_->header.num_records;
 
-    // Copy Key
+    // Copy key
+    std::memcpy(payload_base + current_offset, key.data(), key.size_bytes());
+
+    // Copy value
     std::memcpy(payload_base + current_offset, value.data(), value.size_bytes());
     current_offset += value.size_bytes();
 
@@ -65,5 +68,13 @@ auto WalStaging<BlockSize>::stage_write(std::uint64_t sequence_id,
 
     return true;
 };
+
+template <std::size_t BlockSize>
+auto WalStaging<BlockSize>::harvest_ready_blocks() noexcept -> void {};
+
+template class WalStaging<SectorSize::LegacyHDD>;
+template class WalStaging<SectorSize::StandardNVMe>;
+template class WalStaging<SectorSize::AdvancedFormat>;
+template class WalStaging<SectorSize::EnterpriseNVMe>;
 
 } // namespace stratadb::wal
