@@ -28,9 +28,9 @@ class EpochManager {
         }
 
         ReadGuard(const ReadGuard&) = delete;
-        ReadGuard& operator=(const ReadGuard&) = delete;
+        auto operator=(const ReadGuard&) -> ReadGuard& = delete;
         ReadGuard(ReadGuard&&) = delete;
-        ReadGuard& operator=(ReadGuard&&) = delete;
+        auto operator=(ReadGuard&&) -> ReadGuard& = delete;
 
       private:
         EpochManager* mgr_;
@@ -77,6 +77,10 @@ class EpochManager {
 
     [[nodiscard]] static auto is_registered() noexcept -> bool {
         return thread_index_ != INVALID_THREAD;
+    }
+
+    [[nodiscard]] auto current_epoch() const noexcept -> std::uint64_t {
+        return global_epoch_.load(std::memory_order_relaxed);
     }
 
     // Internal maintenance hook for external components/tests that need deterministic progress.
