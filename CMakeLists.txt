@@ -42,6 +42,7 @@ target_compile_options(stratadb_warnings INTERFACE
   -Wold-style-cast
   -Wcast-align
   -Werror
+  -Wno-interference-size
 )
 
 # Apply compiler profiles to the interface
