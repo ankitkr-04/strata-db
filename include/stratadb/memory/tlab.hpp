@@ -18,7 +18,7 @@ class TLAB {
     auto operator=(const TLAB&) -> TLAB& = delete;
     TLAB(TLAB&&) = delete;
     auto operator=(TLAB&&) -> TLAB& = delete;
-    ~TLAB() noexcept;
+    ~TLAB() noexcept = default;
 
     // Must be called before the backing Arena is retired.
     // After detach(), all allocations return nullptr.

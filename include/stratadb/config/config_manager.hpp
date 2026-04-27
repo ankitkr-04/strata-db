@@ -23,23 +23,25 @@ class ConfigManager {
     ~ConfigManager() noexcept;
 
     ConfigManager(const ConfigManager&) = delete;
-    ConfigManager& operator=(const ConfigManager&) = delete;
+    auto operator=(const ConfigManager&) -> ConfigManager& = delete;
     ConfigManager(ConfigManager&&) = delete;
-    ConfigManager& operator=(ConfigManager&&) = delete;
+    auto operator=(ConfigManager&&) -> ConfigManager& = delete;
 
     class [[nodiscard]] ReadGuard {
       public:
         ReadGuard(const ReadGuard&) = delete;
-        ReadGuard& operator=(const ReadGuard&) = delete;
+        auto operator=(const ReadGuard&) -> ReadGuard& = delete;
+
+        ~ReadGuard() = default;
 
         ReadGuard(ReadGuard&&) = delete;
-        ReadGuard& operator=(ReadGuard&&) = delete;
+        auto operator=(ReadGuard&&) -> ReadGuard& = delete;
 
-        [[nodiscard]] const MutableConfig* operator->() const noexcept {
+        [[nodiscard]] auto operator->() const noexcept -> const MutableConfig* {
             return config_;
         }
 
-        [[nodiscard]] const MutableConfig& get() const noexcept {
+        [[nodiscard]] auto get() const noexcept -> const MutableConfig& {
             return *config_;
         }
 

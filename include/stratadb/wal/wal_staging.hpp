@@ -37,7 +37,7 @@ class WalStaging {
         , staging_arena_(&staging_arena) {}
 
     // Hot Path
-    //  Called by users thread inside db->put()/db->delete() to stage the record for later flush to disk.
+    //  Called by users thread inside db->put()/db->delete() to stage the record for later flush to dixxxxsk.
 
     auto stage_write(std::uint64_t sequence_id,
                      std::span<const std::byte> key,

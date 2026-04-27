@@ -3,7 +3,6 @@
 #include "stratadb/config/wal_config.hpp"
 #include "stratadb/memory/arena.hpp"
 #include "stratadb/memory/epoch_manager.hpp"
-#include "stratadb/wal/wal_block.hpp"
 #include "stratadb/wal/wal_staging.hpp"
 
 #include <cstdint>

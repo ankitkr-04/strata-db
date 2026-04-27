@@ -69,7 +69,7 @@ auto xorshift64() noexcept -> std::uint64_t {
 
 [[nodiscard]] auto walk_forward(SkipListNode* cur, int level, std::string_view user_key, std::uint64_t seq) noexcept
     -> std::pair<SkipListNode*, SkipListNode*> {
-    const std::size_t level_index = static_cast<std::size_t>(level);
+    const auto level_index = static_cast<std::size_t>(level);
 
     while (true) {
         SkipListNode* next = cur->next_nodes()[level_index].load(std::memory_order_acquire);

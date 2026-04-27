@@ -97,7 +97,7 @@ auto SkipListNode::construct(void* mem,
 
     // Copy Value
     std::memcpy(payload + ikey_len, value.data(), value.size());
-
+    
     return *node;
 }
 

@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <bit>
 #include <cassert>
-#include <stdexcept>
 #include <cstdio>
 #include <thread>
 

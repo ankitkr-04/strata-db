@@ -1,7 +1,6 @@
 
 #include "stratadb/wal/wal_staging.hpp"
 
-#include "stratadb/memory/arena.hpp"
 #include "stratadb/memory/epoch_manager.hpp"
 #include "stratadb/memory/tlab.hpp"
 
@@ -12,6 +11,7 @@ template <std::size_t BlockSize>
 thread_local WalBlock<BlockSize>* WalStaging<BlockSize>::tls_current_block_ = nullptr;
 
 // Thread local tlab
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 thread_local std::unique_ptr<memory::TLAB> tls_tlab = nullptr;
 
 template <std::size_t BlockSize>
@@ -20,11 +20,11 @@ auto WalStaging<BlockSize>::stage_write(std::uint64_t sequence_id,
                                         std::span<const std::byte> key,
                                         std::span<const std::byte> value) noexcept -> bool {
 
-    memory::EpochManager::ReadGuard guard(epoch_manager_);
+    memory::EpochManager::ReadGuard guard(*epoch_manager_);
     const std::size_t kv_size = key.size_bytes() + value.size_bytes();
 
     if (tls_tlab == nullptr) [[unlikely]] {
-        tls_tlab = std::make_unique<memory::TLAB>(staging_arena_);
+        tls_tlab = std::make_unique<memory::TLAB>(*(staging_arena_));
     }
 
     if (tls_current_block_ != nullptr) {
@@ -45,7 +45,7 @@ auto WalStaging<BlockSize>::stage_write(std::uint64_t sequence_id,
         // Placement new zeroes out padding and fields safely
         tls_current_block_ = new (block_memory) WalBlock<BlockSize>();
         // Stamp the epoch
-        tls_current_block_->header.epoch_number = epoch_manager_.current_epoch();
+        tls_current_block_->header.epoch_number = epoch_manager_->current_epoch();
     }
 
     // Memory Copy

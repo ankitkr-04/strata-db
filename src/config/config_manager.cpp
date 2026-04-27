@@ -3,15 +3,14 @@
 #include <cstdio>
 #include <exception>
 #include <new>
-#include <utility>
 
 namespace stratadb::config {
 
 ConfigManager::ConfigManager(ImmutableConfig imm, MutableConfig mut, memory::EpochManager& epoch_mgr) noexcept
-    : immutable_config_(std::move(imm))
+    : immutable_config_(imm)
     , epoch_mgr_(epoch_mgr) {
 
-    auto* ptr = new (std::nothrow) MutableConfig{std::move(mut)};
+    auto* ptr = new (std::nothrow) MutableConfig{mut};
     if (!ptr) {
         std::terminate();
     }
@@ -30,7 +29,7 @@ ConfigManager::~ConfigManager() noexcept {
     epoch_mgr_.force_reclaim_all();
 }
 
-ConfigManager::ReadGuard ConfigManager::get_mutable() const noexcept {
+auto ConfigManager::get_mutable() const noexcept -> ConfigManager::ReadGuard {
     if (!memory::EpochManager::is_registered()) {
         std::fputs("ConfigManager::get_mutable requires registered epoch thread\n", stderr);
         std::terminate();
@@ -39,7 +38,7 @@ ConfigManager::ReadGuard ConfigManager::get_mutable() const noexcept {
 }
 
 auto ConfigManager::update_mutable(MutableConfig new_cfg) -> std::expected<void, ConfigError> {
-    auto* new_ptr = new (std::nothrow) MutableConfig{std::move(new_cfg)};
+    auto* new_ptr = new (std::nothrow) MutableConfig{new_cfg};
     if (!new_ptr) {
         return std::unexpected(ConfigError::OutOfMemory);
     }

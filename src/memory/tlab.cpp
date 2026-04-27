@@ -9,12 +9,10 @@ namespace stratadb::memory {
 TLAB::TLAB(Arena& arena) noexcept
     : arena_(&arena) {}
 
-TLAB::~TLAB() noexcept = default;
-
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
 auto TLAB::allocate_slow(std::size_t size, std::size_t alignment) noexcept -> void* {
 
-    if(arena_ == nullptr) [[unlikely]] {
+    if (arena_ == nullptr) [[unlikely]] {
         return nullptr; // TLAB is detached
     }
     const std::size_t tlab_size = arena_->tlab_size();
