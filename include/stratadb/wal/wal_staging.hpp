@@ -51,7 +51,10 @@ class WalStaging {
   private:
     memory::EpochManager* epoch_manager_;
     memory::Arena* staging_arena_;
-    std::mutex handoff_mutex_; // Protects the handoff of blocks from staging to harvesting
+
+    // for o(1) lookup
+    std::size_t instance_id_{0}; // Unique ID for this staging instance, used for debugging and tracking
+    std::mutex handoff_mutex_;   // Protects the handoff of blocks from staging to harvesting
     std::vector<WalBlock<BlockSize>*>
         ready_blocks_; // Blocks that are ready to be flushed to disk, protected by handoff_mutex_
 };
