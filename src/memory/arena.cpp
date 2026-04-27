@@ -110,6 +110,9 @@ auto Arena::create(const config::MemoryConfig& config) noexcept -> std::expected
 
     // effective config (runtime truth)
     config::MemoryConfig effective_config = config;
+    if (effective_config.block_alignment_bytes == 0) {
+        effective_config.block_alignment_bytes = std::bit_ceil(utils::system_page_size());
+    }
 
     const std::size_t total = effective_config.total_budget_bytes;
     const auto page_strategy = effective_config.page_strategy;
