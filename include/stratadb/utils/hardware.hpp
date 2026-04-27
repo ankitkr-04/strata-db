@@ -1,26 +1,29 @@
 #pragma once
 
 #include <cstddef>
-#include <linux/fs.h>
-#include <sys/ioctl.h>
+#include <new>
+#include <cstdint>
 
 namespace stratadb::utils {
+#if defined(__cpp_lib_hardware_interference_size) && (__cpp_lib_hardware_interference_size >= 201603L)
+inline constexpr std::size_t CACHE_LINE_SIZE = std::hardware_destructive_interference_size;
+inline constexpr std::size_t CACHE_CONSTRUCT_SIZE = std::hardware_constructive_interference_size;
+#else
+inline constexpr std::size_t CACHE_LINE_SIZE = 64UZ;
+inline constexpr std::size_t CACHE_CONSTRUCT_SIZE = 64UZ;
+#endif
 
-// 64 bytes is the common L1 cache-line size on x86_64 and ARM64.
-inline constexpr std::size_t CACHE_LINE_SIZE = 64;
 inline constexpr std::size_t DEFAULT_ATOMIC_WRITE_BOUNDARY = 4096;
 
-// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
-[[nodiscard]] inline auto probe_atomic_write_boundary(int fd,
-                                                      size_t fallback_size = DEFAULT_ATOMIC_WRITE_BOUNDARY) noexcept
-    -> std::size_t {
-    unsigned int physical_block_size = 0;
+// Probes the OS for the disk's physical sector size (AWUPF).
+[[nodiscard]] auto probe_atomic_write_boundary(int fd,
+                                               std::size_t fallback_size = DEFAULT_ATOMIC_WRITE_BOUNDARY) noexcept
+    -> std::size_t;
 
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg,hicpp-vararg)
-    if (ioctl(fd, BLKPBSZGET, &physical_block_size) == 0) {
-        return physical_block_size;
-    }
+// Probes the OS for the memory management page size (4K vs 16K vs 64K).
+[[nodiscard]] auto system_page_size() noexcept -> std::size_t;
 
-    return fallback_size;
-};
+// Probes the hardware for available logical cores (respecting OS constraints).
+[[nodiscard]] auto logical_core_count() noexcept -> std::uint32_t;
+
 } // namespace stratadb::utils

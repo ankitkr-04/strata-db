@@ -93,6 +93,7 @@ add_library(stratadb STATIC
   src/memtable/skiplist_node.cpp
   src/memtable/skiplist_memtable.cpp
   src/wal/wal_staging.cpp
+  src/utils/hardware.cpp
 )
 
 target_include_directories(stratadb PUBLIC include PRIVATE src)
