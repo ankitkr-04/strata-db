@@ -4,181 +4,178 @@ Author: Ankit Kumar
 Date: 2026-04-17
 
 ## Last Updated
-2026-04-23
+2026-04-27
 
 ## Change Summary
 - 2026-04-17: Initial architecture document for immutable/mutable config split.
-- 2026-04-19: Expanded with explicit system model, data-flow diagram, component rationale blocks, design/failure tables, and observability guidance.
-- 2026-04-20: Reduced component-level verbosity and refocused on ImmutableConfig, MutableConfig, and ConfigManager runtime behavior.
-- 2026-04-23: Fixed intra-doc links and added related-document navigation for memtable phase integration. Synced with current implementation for registered-thread precondition in `get_mutable()`, destructor teardown behavior, and `update_mutable()` result contract.
+- 2026-04-19: Expanded with system model, data-flow diagrams, and failure analysis.
+- 2026-04-20: Refocused component breakdown around runtime behavior.
+- 2026-04-23: Synced API naming and navigation links.
+- 2026-04-27: Corrected lifecycle semantics to match current code: destructor retires current snapshot (not force-drain), get_mutable has explicit registration guard, and update path uses serialized pointer exchange plus epoch retirement.
 
 ## Purpose
-Describe how StrataDB models immutable and mutable configuration, and how `ConfigManager` publishes runtime updates safely for concurrent readers.
+Describe how runtime configuration updates are published safely to concurrent readers using immutable snapshots and epoch-protected pointer lifetime.
 
 ## Overview
-Configuration in StrataDB is intentionally split into:
+The subsystem uses a split config model:
 
-- Immutable startup state (`ImmutableConfig`)
-- Mutable runtime state (`MutableConfig`)
+1. ImmutableConfig is copied at manager construction and never mutated.
+2. MutableConfig is published through an atomic pointer.
+3. Readers access MutableConfig through a guard that carries an epoch read guard.
+4. Writers replace snapshots under a writer mutex and retire old snapshots through EpochManager.
 
-`ConfigManager` coordinates publication of mutable snapshots and safe concurrent read access using epoch-based reclamation.
-
-For epoch internals and reclamation lifecycle details, see [01-epoch-reclamation.md](01-epoch-reclamation.md).
+The design avoids in-place shared mutation and keeps reader code lock-free after thread registration.
 
 ## System Model
-The subsystem uses copy-and-publish with deferred reclamation:
+| Layer | Type | Mutation Policy | Concurrency Boundary |
+| --- | --- | --- | --- |
+| Immutable state | ImmutableConfig | Construction only | None needed at runtime |
+| Mutable runtime state | MutableConfig | Whole-snapshot replacement | Atomic pointer publication |
+| Coordinator | ConfigManager | Serialized writer updates | update_mutex_ + epoch retire |
 
-1. `ImmutableConfig` is stored by value and never changed after construction.
-2. `MutableConfig` lives behind `std::atomic<MutableConfig*>`.
-3. Readers call `get_mutable()` and receive a guard-bound snapshot pointer (registered epoch thread required).
-4. Writers call `update_mutable(...)`, allocate a replacement snapshot, atomically publish it, and retire the old pointer (registered epoch thread required).
-5. Old snapshots are retired and reclaimed through the epoch manager after reader quiescence.
-6. Destructor clears the current pointer, deletes it immediately, then drains deferred retire lists via `force_reclaim_all()`.
-
-This separates read consistency from write synchronization: readers get stable snapshots, writers serialize publication.
+| Runtime API | Behavior | Safety Contract |
+| --- | --- | --- |
+| get_mutable() | Returns ReadGuard that exposes const MutableConfig* | Requires registered epoch thread, otherwise terminates |
+| update_mutable(new_cfg) | Allocates replacement and atomically publishes it | Returns expected<void, ConfigError>; old snapshot retired via epoch manager |
 
 ## Architecture / Design
-
-| Layer | Primary Type | Mutation Policy | Concurrency Boundary |
-| --- | --- | --- | --- |
-| Immutable state | `ImmutableConfig` | Construct-time only | No runtime synchronization required |
-| Mutable state | `MutableConfig` | Snapshot replacement | Read via atomic pointer + epoch guard |
-| Coordinator | `ConfigManager` | Serialized publish path | `update_mutex_` and atomic exchange |
-
-| Runtime API | Purpose | Safety Contract |
+| Element | Current Implementation | Why It Matters |
 | --- | --- | --- |
-| `get_mutable()` | Return current mutable snapshot | Requires registered epoch thread; guard lifetime protects referenced snapshot |
-| `update_mutable(new_cfg)` | Publish replacement mutable snapshot | Returns `expected<void, ConfigError>`; old snapshot retired on success, so caller must be epoch-registered |
-
-## System Context
-- Public headers:
-	- `include/stratadb/config/config_manager.hpp`
-	- `include/stratadb/config/immutable_config.hpp`
-	- `include/stratadb/config/mutable_config.hpp`
-- Implementation:
-	- `src/config/config_manager.cpp`
-- Tests:
-	- `tests/config/config_manager_test.cpp`
-
-The memory safety contract for reclaimed snapshots depends on `memory::EpochManager` integration.
+| Initial mutable snapshot | Constructor allocates with new (nothrow), terminates on failure | Ensures manager always starts with valid mutable state |
+| Reader access | ReadGuard owns EpochManager::ReadGuard + loaded pointer | Snapshot pointer lifetime protected for guard scope |
+| Writer publication | update_mutex_ + atomic exchange(acq_rel) | Deterministic writer ordering and publication |
+| Snapshot retirement | epoch_mgr_.retire(old_ptr) | Defers free until readers quiesce |
+| Teardown path | Destructor exchanges pointer to null and retires old pointer | Avoids immediate free while read guards may still exist |
 
 ## Data Flow
 ```mermaid
 flowchart TD
-    A[ConfigManager ctor] --> B[allocate initial MutableConfig]
-    B --> C[store in atomic current_mutable_config_]
-    C --> D[get_mutable]
-    D --> E{"epoch thread registered?"}
+    A[ConfigManager constructor] --> B[allocate MutableConfig snapshot]
+    B --> C[store pointer in atomic current_mutable_config_]
+
+    D[get_mutable] --> E{Epoch thread registered?}
     E -- no --> X[terminate]
     E -- yes --> F[construct Epoch ReadGuard]
-    F --> G[atomic load snapshot pointer]
-    G --> H[return ReadGuard + const MutableConfig*]
+    F --> G[atomic load current snapshot pointer]
+    G --> H[return ConfigManager ReadGuard]
 
-    C --> U0["update_mutable(new_cfg)"]
-    U0 --> I[allocate replacement snapshot]
-    I --> J{"allocation success?"}
-    J -- no --> K[return ConfigError.OutOfMemory]
-    J -- yes --> L[lock update_mutex_]
-    L --> M[atomic exchange old/new pointer]
-    M --> N["epoch_mgr.retire(old_ptr)"]
+    I[update_mutable(new_cfg)] --> J[allocate replacement snapshot]
+    J --> K{allocation success?}
+    K -- no --> L[return ConfigError.OutOfMemory]
+    K -- yes --> M[lock update_mutex_]
+    M --> N[atomic exchange old and new pointer]
+    N --> O[epoch_mgr.retire(old_ptr)]
+    O --> P[return success]
 
-    C --> T[destructor]
-    T --> U[store nullptr and delete current snapshot]
-    U --> V["epoch_mgr.force_reclaim_all()"]
+    Q[ConfigManager destructor] --> R[exchange pointer with nullptr]
+    R --> S{old pointer present?}
+    S -- yes --> T[epoch_mgr.retire(old_ptr)]
+    S -- no --> U[done]
 ```
 
 ## Components
-
 ### ImmutableConfig
 #### Responsibility
-Store startup-time configuration values that should not change during runtime.
+Store startup-only settings that must remain stable.
 
 #### Why This Exists
-Engine invariants tied to storage layout and filesystem context must remain stable after startup.
+Startup invariants should not be affected by runtime tuning operations.
 
 #### How It Works
-`ImmutableConfig` is held by value in `ConfigManager` and initialized once in the constructor path.
+Held by value in ConfigManager and initialized in constructor.
 
 #### Concurrency Model
-No runtime synchronization needed because immutable state is not updated after construction.
+No runtime synchronization required.
 
 #### Trade-offs
-Changing immutable values requires reconstructing manager state rather than in-place reconfiguration.
+Changing immutable policy requires new manager construction.
 
 ### MutableConfig
 #### Responsibility
-Define runtime-tunable settings that can be safely swapped while readers are active.
+Represent runtime-tunable knobs.
 
 #### Why This Exists
-Operational tuning such as background threads and memtable behavior must evolve at runtime without pausing all readers.
+Operational tuning must be possible without global reader pauses.
 
 #### How It Works
-Writers allocate a new `MutableConfig` snapshot and publish via atomic pointer exchange.
+Writers publish fully-formed replacement snapshots.
 
 #### Concurrency Model
-Readers view a stable snapshot pointer while holding an epoch guard; writers never mutate reader-visible snapshots in place.
+Readers observe immutable snapshot instances through atomic pointer loads.
 
 #### Trade-offs
-Each update allocates memory and may temporarily increase retained memory until reclamation progresses.
+Update frequency directly impacts temporary memory footprint until reclaim catches up.
 
 ### ConfigManager
 #### Responsibility
-Coordinate publication of mutable config snapshots and safe reader access under concurrency.
+Coordinate snapshot publication, read guards, and deferred retirement.
 
 #### Why This Exists
-Without a publication coordinator, writers could free or overwrite snapshot data still in use by active readers.
+Without publication and lifetime coordination, readers can observe freed or partially updated state.
 
 #### How It Works
-- Constructor allocates initial mutable snapshot and stores it atomically.
-- `get_mutable()` verifies the caller thread is epoch-registered, then constructs an epoch guard and loads active snapshot pointer.
-- `update_mutable(...)` allocates replacement, serializes writer path with `update_mutex_`, exchanges pointer atomically, retires old pointer (epoch registration required by `EpochManager::retire`).
-- Destructor clears and directly deletes the current pointer, then calls `force_reclaim_all()` to drain any deferred retired snapshots.
+- Constructor allocates initial MutableConfig snapshot and stores atomic pointer.
+- get_mutable checks EpochManager registration before creating ReadGuard.
+- ReadGuard creates EpochManager::ReadGuard first, then loads snapshot pointer.
+- update_mutable allocates new snapshot, serializes with update_mutex_, exchanges pointer, retires old snapshot.
+- Destructor exchanges pointer with null and retires final snapshot.
 
 #### Concurrency Model
-- Readers are mostly lock-free after registration: epoch guard + atomic pointer load.
-- Writers are serialized by mutex and publish with atomic exchange.
-- Reclamation is deferred to epoch manager.
+- Readers: epoch guard plus acquire pointer load.
+- Writers: mutex-serialized exchange path.
+- Reclamation: delegated to EpochManager.
 
 #### Trade-offs
-- Read path is simple and low coordination overhead.
-- Write path includes allocation, mutex lock, and deferred reclamation complexity.
+Simple read-side API, but relies on strict epoch registration discipline for both read and write threads.
 
 ## Key Design Decisions
 | Decision | Why | Alternative Rejected | Trade-off |
 | --- | --- | --- | --- |
-| Snapshot publication via atomic pointer | Keep read path simple and avoid in-place mutation races | Shared mutable object with fine-grained locking | Extra allocations per update |
-| Epoch-protected read guard | Tie pointer lifetime to explicit read participation | Reference counting every snapshot | Requires epoch discipline in all participating threads |
-| Fail-fast registration check in `get_mutable()` | Prevent read snapshots without epoch participation | Best-effort fallback for unregistered threads | Unregistered callers terminate instead of degrading gracefully |
-| Serialized writer path (`update_mutex_`) | Deterministic publication order and retire sequence | Lock-free multi-writer CAS loop | Lower write parallelism |
-| `new (std::nothrow)` + explicit error/terminate split | Constructor treats OOM as fatal, update path returns explicit error | Exception propagation in noexcept path | Mixed fatal/non-fatal allocation policy to preserve startup invariants |
+| Atomic snapshot pointer publication | Keep reader path lock-free and simple | Shared mutable object with internal locks | Full snapshot allocation per update |
+| Guard-based read API | Make snapshot lifetime explicit in call sites | Naked pointer return | Slightly heavier call-site object lifetime |
+| Writer serialization with mutex | Deterministic update ordering | Lock-free multi-writer CAS loop | Writer throughput is serialized |
+| Explicit registration gate in get_mutable | Fail fast on unsafe read usage | Best-effort fallback without guard | Misuse terminates process |
+| Nothrow allocation + expected error in update path | Keep API explicit without exceptions | Throw-based update failures | Caller must branch on expected result |
 
 ## Failure Modes
 | Scenario | Cause | Impact | Mitigation |
 | --- | --- | --- | --- |
-| Snapshot memory growth | Updates outpace reclaim progress | Higher transient memory use | Regular epoch progress and reclaim calls |
-| Mis-scoped read guard | Guard destroyed before pointer use ends | Potential unsafe access pattern at caller | Keep all snapshot dereferences inside guard scope |
-| Write contention | Many writers serialize on `update_mutex_` | Higher update latency | Batch updates or reduce update frequency |
-| No epoch participation in caller threads | Missing thread registration/guard discipline | Reclamation safety assumptions can break | Enforce shared thread-entry policy with epoch manager |
-| Unregistered `get_mutable()` call | Caller thread not registered with `EpochManager` | Process termination by design | Register each reader thread before config access |
-| Unregistered `update_mutable()` call | Writer thread not registered and retire path asserts/terminates | Process termination by design | Register writer threads with `EpochManager` before updates |
+| get_mutable called unregistered | EpochManager::is_registered false | Process termination | Register every reader thread before config access |
+| update_mutable allocation fails | new (nothrow) returns null | Update rejected with OutOfMemory | Handle error and retry with pressure relief |
+| update thread not epoch-registered | retire precondition violated in EpochManager | Assertion/termination in debug or undefined lifecycle in misuse | Register writer threads too |
+| Excess update churn | Updates outpace reclaim progress | Higher transient memory retention | Batch updates and drive reclaim cadence |
+| Mis-scoped ReadGuard use | Caller stores views beyond guard scope | Potential stale access | Keep all usage within guard lifetime |
 
 ## Observability
-- Correctness checks: `tests/config/config_manager_test.cpp` covers read visibility, concurrent read/write behavior, and reclamation signal.
-- Inspect publication and retirement behavior in `src/config/config_manager.cpp`.
-- For lifecycle/reclaim debugging details, use [01-epoch-reclamation.md](01-epoch-reclamation.md).
+- Source of truth:
+  - include/stratadb/config/config_manager.hpp
+  - src/config/config_manager.cpp
+  - tests/config/config_manager_test.cpp
+- Runtime checks:
+  - Fatal guard for unregistered get_mutable callers.
+  - Explicit OutOfMemory result for update failures.
+- Reclaim behavior is explained in epoch architecture document.
+
+## Validation / Test Matrix
+| Test | What It Verifies | Safety Property |
+| --- | --- | --- |
+| BasicGetMutable | Reader can observe mutable snapshot | Snapshot visibility correctness |
+| UpdateMutablePublishesNewValue | Writer publish path updates reader-visible state | Publication correctness |
+| ConcurrentReadWrite | Reads and updates interleave under concurrency | No obvious read-path corruption |
+| UpdateOutOfMemoryPath | Allocation failure returns ConfigError | Non-throwing failure behavior |
 
 ## Usage / Interaction
-| Interaction | Caller Pattern | Expected Guarantee |
-| --- | --- | --- |
-| Read mutable config | Register thread with `EpochManager`, then acquire `get_mutable()` guard | Stable snapshot view during guard lifetime |
-| Update mutable config | Register writer thread, provide full replacement `MutableConfig` to `update_mutable(...)`, and handle `ConfigError` | Atomic publication of new snapshot on success |
-| Reclaim stale snapshots | Call `epoch.quiescent_reclaim()` from registered thread | Old snapshots eventually freed after readers quiesce |
+| Step | Caller Action | Required Condition | Expected Outcome |
+| --- | --- | --- | --- |
+| 1 | Register thread with EpochManager | Before read/write API use | Thread may safely participate |
+| 2 | Read with get_mutable guard | Registered thread | Stable mutable snapshot for guard scope |
+| 3 | Publish with update_mutable(new_cfg) | Registered writer thread | New snapshot published or explicit OOM error |
+| 4 | Advance reclaim periodically | Active update workloads | Old snapshots eventually reclaimed |
 
 ## Related Documents
 - [01-epoch-reclamation.md](01-epoch-reclamation.md)
 - [05-skiplist-memtable.md](05-skiplist-memtable.md)
 
 ## Notes
-- Not verified: end-to-end production workload tuning values for mutable configuration.
-- Not verified: runtime policy for how often callers should invoke epoch advancement/reclaim outside tests.
-- Not verified: reproducibility of attached profile percentages across toolchain/environment changes.
+- Not verified: recommended update frequency policy for production workloads.
+- Not verified: memory retention profile under sustained high-frequency update traffic.

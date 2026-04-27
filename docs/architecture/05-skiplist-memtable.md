@@ -4,11 +4,12 @@ Author: Ankit Kumar
 Date: 2026-04-23
 
 ## Last Updated
-2026-04-23
+2026-04-27
 
 ## Change Summary
 - 2026-04-23: Created architecture documentation for MemTable abstraction and SkipListMemTable implementation, including lock-free insertion flow, sequence/version ordering, memory thresholds, and validation coverage.
 - 2026-04-23: Added related-document navigation and tightened contract-level notes for `IsMemTable` interoperability.
+- 2026-04-27: Synced phase-context references with current repository state and added WAL staging relationship in related documents.
 
 ## Purpose
 Document the in-memory write-path index model used by StrataDB in phase 3, including the generic MemTable contract and the concrete skip-list implementation.
@@ -278,6 +279,7 @@ Cheap checks and explicit status codes, but threshold crossing is advisory and m
 - [03-memory-arena.md](03-memory-arena.md)
 - [04-thread-local-allocation.md](04-thread-local-allocation.md)
 - [06-skiplist-node.md](06-skiplist-node.md)
+- [07-wal-staging.md](07-wal-staging.md)
 
 ## Notes
 - Not verified: formal linearizability proof for concurrent same-key writes.

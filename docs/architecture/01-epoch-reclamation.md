@@ -4,75 +4,78 @@ Author: Ankit Kumar
 Date: 2026-04-17
 
 ## Last Updated
-2026-04-23
+2026-04-27
 
 ## Change Summary
 - 2026-04-17: Initial architecture write-up for epoch-based reclamation.
 - 2026-04-19: Expanded with explicit system model, lifecycle visualization, component-level rationale, design and failure tables, and observability workflow.
-- 2026-04-21: Updated to full systems-level structure, added explicit thread interaction and memory lifecycle diagrams, documented force teardown reclaim path, and aligned failure and validation sections with current implementation and tests.
-- 2026-04-22: Documented updated retire_node batching behavior in src/memory/epoch_manager.cpp, including automatic epoch advancement/reclaim on interval boundaries plus yield-based backpressure when retire lists exceed RETIRE_LIST_THRESHOLD.
-- 2026-04-23: Added related-document navigation for configuration and memtable phase components. Synced names and public API to current code (`RECLAIM_INTERVAL`, `RECLAIM_INTERVAL_MASK`, `quiescent_reclaim()`), and documented retire-list growth terminate path.
+- 2026-04-21: Updated to full systems-level structure with thread interaction and memory lifecycle diagrams.
+- 2026-04-22: Documented retire-side batching and pressure behavior.
+- 2026-04-23: Synced public API naming and maintenance hooks.
+- 2026-04-27: Rewritten to match current implementation: 256-thread capacity, per-thread slab plus overflow retire storage, adaptive sleep backoff under pressure, and per-instance thread-slot tracking.
 
 ## Purpose
-Document the exact safety and lifecycle model of epoch-based reclamation in StrataDB so contributors can reason about when memory can be retired, when it can be freed, and what conditions can delay reclamation.
+Document the exact safety model for deferred memory reclamation so contributors can reason about when retired objects become reclaimable and why some objects remain retained under active readers.
 
 ## Overview
-EpochManager provides deferred reclamation for concurrent access patterns where readers may hold references while writers retire objects. The design separates object retirement from object destruction:
+EpochManager separates logical retirement from physical destruction:
 
-1. A writer retires an object with a recorded retire epoch.
-2. Active readers publish their currently observed epoch.
-3. Reclaim computes the minimum active reader epoch and destroys only objects older than that boundary.
+1. Writers retire pointers with the current global epoch.
+2. Readers publish active read epochs through ReadGuard scopes.
+3. Reclaim computes the minimum visible reader epoch.
+4. Nodes retired before that minimum epoch are safe to destroy.
 
-This avoids use-after-free risks without requiring readers to take a mutex.
+The implementation is tuned for cache locality and low allocator pressure by using a fixed slab first and overflow storage only when necessary.
 
 ## System Model
-The system has four explicit roles:
-
 | Role | Backing State | Lifecycle |
 | --- | --- | --- |
-| Global epoch timeline | global_epoch_ | Monotonic logical clock advanced by advance_epoch() |
-| Registered thread slot | thread_states_[slot] and active_thread_masks_ bit | Claimed by register_thread(), released by unregister_thread() |
-| Active read-side critical section | thread_states_[slot].state != INACTIVE_EPOCH | Published by enter(), cleared by leave() |
-| Retired object candidate | RetireNode in retire_list_ | Added by retire(), removed by reclaim() or force_reclaim_all() |
+| Global timeline | global_epoch_ | Monotonic logical clock advanced by try_advance_epoch |
+| Registered thread | active_thread_masks_ bit + slot index | Claimed by register_thread, released by unregister_thread |
+| Reader critical section | thread_states_[slot].state | Set by enter, reset to INACTIVE_EPOCH by leave |
+| Retired object | RetireNode in slab or overflow | Added by retire_node, removed by reclaim/force_reclaim_all |
 
-Mental model:
-- Registration gives a thread ownership of one slot.
-- ReadGuard marks that slot as active for a specific epoch.
-- Retire appends nodes to the owner thread slot retire list and uses batched maintenance.
-- Reclaim can destroy only nodes where retire_epoch < min_active_epoch.
+| Capacity Parameter | Current Value | Source |
+| --- | --- | --- |
+| Max managed threads per EpochManager | 256 | utils::MAX_SUPPORTED_THREADS |
+| Max DB instances per process | 64 | utils::MAX_DB_INSTANCES |
+| Fast slab capacity per thread | 168 retire nodes | ThreadState::SLAB_CAPACITY |
+| Batch interval for maintenance | 64 retired nodes | RECLAIM_INTERVAL |
+| Pressure threshold | 10000 retained nodes/thread | RETIRE_LIST_THRESHOLD |
 
 ## Architecture / Design
-
-| Element | Implementation | Why It Matters |
+| Element | Current Implementation | Why It Matters |
 | --- | --- | --- |
-| Slot capacity | MAX_THREADS = 128 fixed array | Bounded metadata and stable slot addresses |
-| Active slot tracking | ActiveThreadMaskWord bits | Reclaim scans only registered slots |
-| Read activity marker | state with INACTIVE_EPOCH sentinel | Distinguishes active readers from inactive threads |
-| Retirement queue | per-thread vector of RetireNode | Removes global lock from retire path |
-| Automatic scope correctness | ReadGuard and ThreadRegistrationGuard | Ensures enter/leave and register/unregister symmetry |
-| Teardown escape hatch | force_reclaim_all() | Single-threaded final drain of all retire lists |
+| Thread registry | Bitmap words with CAS bit claims | O(1)-ish registration without global lock |
+| Thread slot state | Cache-line aligned ThreadState array | Reduces false sharing between threads |
+| Retire storage | Fixed slab plus dynamic overflow array | Fast common path with bounded metadata overhead |
+| Reclaim cadence | retire_node batched trigger + quiescent_reclaim hook | Progress can be automatic or explicit |
+| Pressure response | Adaptive sleep backoff and extra reclaim pass | Avoids unbounded retire growth under lagging readers |
+| Teardown drain | force_reclaim_all | Deterministic process-shutdown cleanup |
 
 ## Data Flow
 ```mermaid
 flowchart TD
-    A[ThreadRegistrationGuard constructor] --> B[register_thread]
-    B --> C[ReadGuard constructor]
-    C --> D[enter stores current global epoch in thread state]
-    D --> E[retire records RetireNode with retire_epoch]
-    E --> F{"retire_list size % RECLAIM_INTERVAL == 0"}
-    F -- yes --> G[advance_epoch]
-    G --> H[reclaim computes min_active_epoch]
-    H --> I{"retire_epoch < min_active_epoch"}
-    I -- yes --> J[call deleter and free object]
-    I -- no --> K[keep node in retire list]
-    H --> L{"retire_list size > RETIRE_LIST_THRESHOLD"}
-    L -- yes --> M[writer yields]
-    L -- no --> N[continue]
-    F -- no --> N
-    C --> R[ReadGuard destructor]
-    R --> S[leave sets INACTIVE_EPOCH]
-    A --> T[ThreadRegistrationGuard destructor]
-    T --> U[unregister_thread]
+    A[ThreadRegistrationGuard ctor] --> B[register_thread]
+    B --> C[ReadGuard ctor]
+    C --> D[enter publishes current epoch]
+    D --> E[retire ptr]
+    E --> F{slab has free slot}
+    F -- yes --> G[append into slab]
+    F -- no --> H[append into overflow array]
+    G --> I[total_retired check]
+    H --> I
+    I --> J{multiple of RECLAIM_INTERVAL}
+    J -- yes --> K[try_advance_epoch]
+    K --> L[reclaim caller slot]
+    L --> M{retained > RETIRE_LIST_THRESHOLD}
+    M -- yes --> N[sleep with bounded backoff]
+    M -- no --> O[continue]
+    J -- no --> O
+    C --> P[ReadGuard dtor]
+    P --> Q[leave sets INACTIVE_EPOCH]
+    A --> R[ThreadRegistrationGuard dtor]
+    R --> S[unregister_thread]
 ```
 
 ### Thread Interaction
@@ -80,185 +83,169 @@ flowchart TD
 sequenceDiagram
     participant R as Reader Thread
     participant W as Writer Thread
-    participant EM as EpochManager
+    participant E as EpochManager
 
-    R->>EM: register_thread
-    W->>EM: register_thread
-    R->>EM: enter (via ReadGuard)
-    Note over R,EM: reader state publishes epoch E
-    W->>EM: quiescent_reclaim
-    W->>EM: retire(obj) with retire_epoch E+1
-    Note over W,EM: quiescent_reclaim calls advance_epoch then reclaim
-    Note over W,EM: min_active_epoch is E, object not reclaimable
-    R->>EM: leave
-    W->>EM: quiescent_reclaim
-    Note over W,EM: min_active_epoch advanced, object reclaimed
+    R->>E: register_thread
+    W->>E: register_thread
+    R->>E: enter (ReadGuard)
+    W->>E: retire(ptr)
+    Note over W,E: ptr tagged with current global epoch
+    W->>E: batched reclaim trigger
+    Note over W,E: min active epoch still includes reader
+    R->>E: leave
+    W->>E: quiescent_reclaim or next batch trigger
+    Note over W,E: ptr becomes reclaimable
 ```
 
 ### Memory Lifecycle
 ```mermaid
 stateDiagram-v2
-    [*] --> Allocated
-    Allocated --> Retired: retire(ptr)
+    [*] --> LiveObject
+    LiveObject --> Retired: retire(ptr)
     Retired --> Pending: retire_epoch >= min_active_epoch
     Retired --> Reclaimed: retire_epoch < min_active_epoch
-    Pending --> Reclaimed: later reclaim after reader progress
+    Pending --> Reclaimed: after reader quiescence + reclaim pass
     Reclaimed --> [*]
 ```
 
 ## Components
-
 ### EpochManager
 #### Responsibility
-Provide registration, read-side epoch publication, retirement bookkeeping, epoch advancement, and reclamation.
+Provide registration, reader-state publication, retire bookkeeping, epoch advancement, and safe reclamation.
 
 #### Why This Exists
-Concurrent readers can observe pointers that writers have already replaced. Deleting immediately after replacement is unsafe when readers are lock-free.
+Concurrent read paths need pointer safety without reader-side mutex locking.
 
 #### How It Works
-- register_thread() claims one free bit in active_thread_masks_ and stores slot index in thread_local thread_index_.
-- enter() stores current global_epoch_ to the thread slot state.
-- leave() stores INACTIVE_EPOCH.
-- retire() appends RetireNode {ptr, deleter, retire_epoch} to the current thread retire list.
-- retire_node() checks a RECLAIM_INTERVAL boundary using `(retire_list_.size() & RECLAIM_INTERVAL_MASK) == 0`.
-- On that boundary, retire_node() advances global epoch once and then runs reclaim() on the caller thread retire list.
-- If the caller retire list grows beyond RETIRE_LIST_THRESHOLD, retire_node() issues std::this_thread::yield() as a pressure signal.
-- If retire-list growth allocation throws during push_back, retire_node() emits a diagnostic and terminates.
-- reclaim() scans active thread states to compute min_active_epoch and compacts the calling thread retire list.
-- quiescent_reclaim() is the public deterministic maintenance hook and performs advance_epoch() + reclaim().
-- force_reclaim_all() drains all retire lists without epoch checks, intended for teardown contexts.
+- register_thread claims one free slot bit and binds thread-local slot state for this EpochManager instance.
+- enter publishes current global epoch into thread state.
+- retire records RetireNode into slab first; overflow is allocated and grown when slab is full.
+- Every 64 retired nodes, retire path attempts epoch advance then reclaim.
+- reclaim scans active thread states to compute min epoch and compacts only the caller thread retire structures.
+- If retained nodes exceed threshold, retire path sleeps with exponential backoff up to 1 ms and may run an extra reclaim.
+- quiescent_reclaim provides explicit maintenance hook.
+- force_reclaim_all bypasses epoch checks and drains all slots.
 
 #### Concurrency Model
-- Synchronization uses atomics with acquire/release and acq_rel operations.
-- Registration uses compare_exchange_weak on mask words.
-- Retire list mutation is single-owner per thread slot.
-- Reclaim reads other thread states, but only mutates the caller retire list.
+- Atomics with acquire/release and acq_rel are used for registration bitmaps, epoch loads/stores, and reader-state visibility.
+- Retire storage mutation is owner-thread local per slot.
+- Reclaim reads all active states, mutates only caller-owned retire containers.
 
 #### Trade-offs
-- Fixed capacity reduces metadata complexity but imposes hard thread limit.
-- Per-thread retire lists remove global retire contention but can create uneven memory buildup.
+Fast common-case retire behavior, but pathological long-lived readers can still cause retained memory growth.
 
 ### ThreadRegistrationGuard
 #### Responsibility
-Tie thread registration and unregistration to lexical scope.
+Bind register/unregister symmetry to lexical scope.
 
 #### Why This Exists
-Unbalanced registration leaks slot ownership and can block new participant threads.
+Manual lifecycle mistakes leak registration slots and can block future thread participation.
 
 #### How It Works
-- Constructor calls register_thread() and stores result as expected<void, EpochError>.
-- Destructor calls unregister_thread() only if registration succeeded.
-- result() exposes registration failure to caller.
+Constructor stores register_thread result; destructor unregisters only if registration succeeded.
 
 #### Concurrency Model
-Slot ownership is represented by one bit in active_thread_masks_; release happens after state is marked inactive and local reclaim is attempted.
+Slot ownership is represented by one bit in active_thread_masks_.
 
 #### Trade-offs
-RAII reduces misuse risk, but callers must check is_registered() or result() when registration can fail.
+Low misuse risk, but callers must still check registration result in failure-aware paths.
 
 ### ReadGuard
 #### Responsibility
 Represent active read-side critical section.
 
 #### Why This Exists
-Manual enter and leave calls are error-prone in early-return or exception paths.
+Manual enter/leave patterns are fragile in early-return paths.
 
 #### How It Works
-- Constructor calls enter().
-- Destructor calls leave().
-- Copy and move operations are deleted to preserve one lexical owner.
+Constructor calls enter, destructor calls leave.
 
 #### Concurrency Model
-Reader visibility is communicated through per-slot atomic state updates. Reclaim relies on this state to decide reclamation boundaries.
+Reader epoch is published through one atomic state field per slot.
 
 #### Trade-offs
-Correctness is improved by RAII, but long-lived guards can delay reclamation progress and increase retained memory.
+Long-lived guards delay reclamation.
 
-### ThreadState and RetireNode
+### ThreadState Storage (Slab and Overflow)
 #### Responsibility
-Store per-thread reader state and deferred reclamation candidates.
+Store pending retire nodes per registered thread.
 
 #### Why This Exists
-Reclamation needs both a retirement timestamp and deleter callback for type-erased destruction.
+Global retire queues increase contention and allocator churn.
 
 #### How It Works
-- ThreadState holds atomic state and retire_list_.
-- RetireNode holds ptr, deleter function pointer, and retire_epoch.
-- reclaim() performs in-place compaction of retire_list_ after invoking deleters for reclaimable nodes.
+- Slab stores first 168 entries inline in a page-sized ThreadState.
+- Overflow array grows geometrically (starting at 256) when slab is exhausted.
+- reclaim compacts both structures in place.
 
 #### Concurrency Model
-Each retire list has a single writer and single mutator pattern bound to slot owner thread operations.
+Single owner mutates slab/overflow for a slot; no shared container lock is needed.
 
 #### Trade-offs
-Type-erased deleter enables generic retire API but uses indirect call on reclaim.
+Excellent locality for common case, but overflow growth can terminate process on allocation failure.
 
 ## Key Design Decisions
 | Decision | Why | Alternative Rejected | Trade-off |
 | --- | --- | --- | --- |
-| Fixed slot array with MAX_THREADS = 128 | Avoid dynamic slot allocation races and pointer invalidation | Dynamically growing thread registry | Hard cap can return ThreadLimitExceeded |
-| Active mask word scanning | Avoid scanning all thread states every reclaim | Full array scan of 128 slots each time | Registration and unregister pay CAS and bit operations |
-| INACTIVE_EPOCH sentinel | Encode active or inactive in one atomic value | Separate bool active flag and epoch field | Sentinel semantics must remain consistent |
-| Per-thread retire list | Remove shared queue lock on retire path | Global synchronized retire queue | Memory pressure can become per-thread skewed |
-| Batched auto-maintenance in retire_node() using RECLAIM_INTERVAL_MASK | Fold epoch progression and reclaim into retire path at fixed intervals | Separate maintenance thread or reclaim only at explicit call sites | Retire path has periodic latency spikes at batch boundaries |
-| Yield when retire list exceeds RETIRE_LIST_THRESHOLD | Provide cooperative backpressure when reclaim lags retirement | Busy-spinning or unbounded retire growth without hinting scheduler | Yield is advisory and may reduce throughput under sustained pressure |
-| force_reclaim_all for teardown | Deterministic final cleanup in single-threaded shutdown | Wait for normal epoch progress during shutdown | Unsafe for concurrent use and should stay teardown-only |
+| Fixed 256-slot model | Stable bounded metadata and deterministic array layout | Dynamic slot registry | Hard thread cap per manager instance |
+| Bitmap slot ownership | Low-overhead registration scan and claim | Mutex-protected vector of slot states | Bit-level CAS complexity |
+| Slab-first retire storage | Keep hot path allocator-free | Always heap-allocate retire nodes | Limited inline capacity per thread |
+| Overflow grow-on-demand | Preserve correctness when retire bursts exceed slab | Drop retires or force immediate reclaim | Additional memory and copy overhead |
+| Batched reclaim trigger in retire path | Amortize maintenance work | Reclaim on every retire | Periodic retire latency spikes |
+| Adaptive sleep backoff | Cooperative pressure release under reclaim lag | Tight spin/yield loops | Throughput dips during sustained pressure |
 
 ## Failure Modes
 | Scenario | Cause | Impact | Mitigation |
 | --- | --- | --- | --- |
-| Registration fails | All slot bits are claimed | Thread cannot participate in epoch protocol | Handle expected error and reduce participating thread count or raise limit |
-| Duplicate registration on same thread | register_thread called when thread_index_ already valid | Assert failure then terminate in corrupted state path | Use ThreadRegistrationGuard and avoid manual double registration |
-| Retire list growth allocation fails | `retire_list_.push_back(...)` throws | Process terminates to avoid partial state | Treat as fatal memory pressure and inspect allocator budget |
-| Reclamation stalls | Reader keeps state active for old epoch | Retire list growth and delayed memory return | Keep ReadGuard scopes short and advance epochs in write paths |
-| Retire-path jitter | retire_node() batch boundary triggers advance_epoch + reclaim work | Higher tail latency for individual retire calls | Keep RECLAIM_INTERVAL tuned to workload and monitor retire-list growth |
-| Excessive retire growth | retire rate exceeds reclaim progress | Higher memory footprint and potential latency from pressure | reclaim periodically, monitor list growth, and apply workload backpressure |
-| Misuse of force_reclaim_all | Called while other threads still active | Potential unsafe reclamation | Restrict to teardown phases with no concurrent access |
+| Registration fails | No free slot among 256 thread slots | Thread cannot use epoch protocol | Handle ThreadLimitExceeded and reduce participant count |
+| Duplicate registration on same thread | register_thread called when already registered | Assertion then terminate | Use ThreadRegistrationGuard |
+| Overflow allocation failure | new[] fails while growing overflow retire storage | Process termination | Provision memory headroom and monitor retire pressure |
+| Reclamation stalls | Reader keeps old epoch active | Memory remains retained | Keep read guards short and invoke quiescent_reclaim on write paths |
+| Pressure backoff triggers frequently | Retire outpaces reclaim for one thread | Higher write-path tail latency | Tune workload and improve reclaim cadence |
+| Misuse of force_reclaim_all | Called with active concurrent access | Potential unsafe reclamation | Restrict to shutdown/teardown windows |
 
 ## Observability
-- Debug assertions validate registration and read-state preconditions in enter(), leave(), retire_node(), and reclaim().
-- Growth pressure signal: retire_node() yields when retire list size exceeds RETIRE_LIST_THRESHOLD.
-- Reclaim cadence signal: retire_node() advances epoch and invokes reclaim() automatically at retire-list size multiples of RECLAIM_INTERVAL.
-- Deterministic maintenance hook: quiescent_reclaim() can be called by tests/callers after registration.
-- Code inspection points:
-  - include/stratadb/memory/epoch_manager.hpp for API and constants
-  - src/memory/epoch_manager.cpp for synchronization and reclaim algorithm
-  - tests/memory/epoch_manager_test.cpp for behavioral expectations
+- Preconditions are assert-backed in register/enter/leave/reclaim paths.
+- Pressure signal is visible via backoff behavior in retire_node.
+- Deterministic maintenance entry point: quiescent_reclaim.
+- Source inspection points:
+  - include/stratadb/memory/epoch_manager.hpp
+  - src/memory/epoch_manager.cpp
+  - tests/memory/epoch_manager_test.cpp
 
 ## Validation / Test Matrix
 | Test | What It Verifies | Safety Property |
 | --- | --- | --- |
-| SingleThreadedReclaim | Retired object freed after epoch advancement and reclaim | Basic retire to reclaim correctness |
-| DeferredDeletion | Object not freed while reader active, then freed after reader exits and epoch advances | No premature reclamation |
-| TSANStress | Concurrent reader and writer operations under heavy iteration | No obvious race regressions under sanitizer-oriented stress |
-| BatchingBehavior | Multiple retired objects reclaimed with batched behavior | Deferred reclaim still drains candidates correctly |
-| EpochStallPreventsReclaim | Active reader stalls reclamation | Min epoch boundary enforcement |
-| ThreadSlotReuse | Repeated registration and unregistration | Slot recycling correctness |
-| MultiEpochReclaim | Repeated retire plus epoch progression | Reclaim across epoch progression |
-| ReclaimIdempotent | Reclaim called multiple times after deletion | No double free from repeated reclaim |
+| SingleThreadedReclaim | Retire and reclaim in one thread | Basic retire-to-delete correctness |
+| DeferredDeletion | Active reader delays deletion | No premature reclamation |
+| TSANStress | Concurrent read/write retire behavior | No obvious race regressions under stress |
+| BatchingBehavior | Reclaim progress over batched retire calls | Batch cadence correctness |
+| EpochStallPreventsReclaim | Reclaim blocked by active reader | Min-active-epoch rule enforcement |
+| ThreadSlotReuse | Register/unregister reuse | Slot lifecycle correctness |
+| ReclaimIdempotent | Repeated reclaim calls after draining | No double free on repeated maintenance |
 
 ## Performance Characteristics
 | Path | Dominant Work | Notes |
 | --- | --- | --- |
-| register_thread | Mask word load and CAS loop | Cost scales with contention for free slots |
-| retire | Push to vector and batch-boundary maintenance check | Usually O(1), every RECLAIM_INTERVAL retires it also advances epoch, reclaims, and may yield |
-| reclaim | Scan active mask bits and compact caller retire list | Cost scales with active slots plus caller retire list size |
-| force_reclaim_all | Full scan of all thread retire lists | Intended for shutdown, not steady-state |
+| register_thread | Bitmap load and CAS retry | Scales with slot occupancy |
+| retire fast path | Slab append | No heap allocation until slab full |
+| retire overflow path | Dynamic array grow/copy when full | Burst-sensitive overhead |
+| reclaim | Active-slot scan + in-place compaction | Cost scales with active slots and local retained nodes |
 
 ## Usage / Interaction
 | Step | Caller Action | Required Condition | Result |
 | --- | --- | --- | --- |
-| 1 | Construct ThreadRegistrationGuard | Thread not currently registered | Thread claims one slot or receives expected error |
-| 2 | Construct ReadGuard around read critical section | Successful registration | Reader epoch is published and protected from premature reclaim |
-| 3 | Call retire(ptr) on replaced object | Successful registration | Object enters deferred retire list |
-| 4 | Continue retire workload; batch boundaries are handled automatically | None | Every RECLAIM_INTERVAL retires, retire_node() advances epoch and invokes reclaim() |
-| 5 | Optionally call quiescent_reclaim() explicitly | Successful registration | Additional progress can be forced when workload is sparse or teardown is near |
-| 6 | Destroy ThreadRegistrationGuard | Guard had successful registration | Thread marks inactive, reclaims local candidates, releases slot |
-| 7 | Optional force_reclaim_all() at shutdown | No concurrent access (teardown) | All remaining retired nodes are destroyed |
+| 1 | Construct ThreadRegistrationGuard | Thread not already registered | Thread joins epoch protocol or receives explicit error |
+| 2 | Use ReadGuard around read critical sections | Successful registration | Reader visibility published safely |
+| 3 | Retire replaced pointers | Successful registration | Pointer enters deferred reclamation lifecycle |
+| 4 | Drive progress with batched retire or quiescent_reclaim | Ongoing write/read activity | Eligible retired nodes reclaimed |
+| 5 | Shutdown with force_reclaim_all | No concurrent users | Remaining retire nodes drained |
 
 ## Related Documents
 - [02-configuration-management.md](02-configuration-management.md)
 - [05-skiplist-memtable.md](05-skiplist-memtable.md)
+- [07-wal-staging.md](07-wal-staging.md)
 
 ## Notes
-- Not verified: quantitative reclaim latency and memory high-water marks under production workloads.
-- Not verified: comparative throughput versus hazard pointers or RCU variants in this repository.
+- Not verified: quantitative memory high-water behavior under prolonged reader stalls in production-like workloads.
+- Not verified: slot-capacity sufficiency for all deployment topologies.

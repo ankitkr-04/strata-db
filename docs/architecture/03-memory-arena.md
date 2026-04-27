@@ -4,12 +4,13 @@ Author: Ankit Kumar
 Date: 2026-04-20
 
 ## Last Updated
-2026-04-23
+2026-04-27
 
 ## Change Summary
 - 2026-04-20: Created architecture documentation for Arena allocation, NUMA/page strategy behavior, and validation/perf workflow.
 - 2026-04-21: Reworked into full systems-level format, corrected strict-local NUMA failure semantics, added explicit thread interaction and memory lifecycle diagrams, and expanded failure and validation matrices.
 - 2026-04-23: Added related-document navigation for TLAB and memtable consumers.Synced option names and allocation guards to current code (`prefault_on_init`, power-of-two alignment checks, and overflow-safe bump path)
+- 2026-04-27: Updated cross-component references to include WAL staging as an Arena consumer and synced document update metadata.
 
 ## Purpose
 Document how Arena reserves and serves bounded memory to concurrent subsystems, how configuration drives mapping and placement behavior, and which guarantees and failure modes callers must handle.
@@ -263,6 +264,7 @@ CAS retries can rise under contention, but no lock convoying is introduced.
 - [04-thread-local-allocation.md](04-thread-local-allocation.md)
 - [05-skiplist-memtable.md](05-skiplist-memtable.md)
 - [06-skiplist-node.md](06-skiplist-node.md)
+- [07-wal-staging.md](07-wal-staging.md)
 
 ## Notes
 - Not verified: strict-local mbind failure behavior in automated tests (current suite validates interleaved and prefault success paths).

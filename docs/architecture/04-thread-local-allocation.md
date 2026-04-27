@@ -4,12 +4,13 @@ Author: Ankit Kumar
 Date: 2026-04-20
 
 ## Last Updated
-2026-04-23
+2026-04-27
 
 ## Change Summary
 - 2026-04-20: Created architecture documentation for TLAB fast-path allocation, refill behavior, and interaction with Arena and memory policy.
 - 2026-04-21: Reworked into full systems-level structure, corrected slow-path decision rules to match implementation, added explicit thread interaction and memory lifecycle diagrams, and expanded failure and validation coverage.
 - 2026-04-23: Added related-document navigation for skiplist memtable and node integration. Synced slow-path guards to current implementation, including overflow check on `size + alignment` before refill.
+- 2026-04-27: Added WAL staging cross-references and synchronized update metadata with current repository state.
 
 ## Purpose
 Document how TLAB performs thread-local bump allocation, how it escalates to Arena on misses, and what correctness and performance trade-offs follow from the current implementation.
@@ -241,6 +242,7 @@ Explicit detach avoids dangling Arena access but requires callers to enforce cor
 - [03-memory-arena.md](03-memory-arena.md)
 - [05-skiplist-memtable.md](05-skiplist-memtable.md)
 - [06-skiplist-node.md](06-skiplist-node.md)
+- [07-wal-staging.md](07-wal-staging.md)
 
 ## Notes
 - Not verified: measured contention impact of large-request direct Arena path at production thread counts.

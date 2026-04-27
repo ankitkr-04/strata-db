@@ -15,7 +15,7 @@ StrataDB is a systems-focused database engine project built in modern C++ with e
 | 1 | Configuration and Concurrency | Completed | YAML-oriented configuration model with copy-and-publish mutable state plus epoch-based read safety. |
 | 2 | Memory Subsystem | Completed | NUMA-aware Arena plus thread-local allocation buffers (TLAB) implemented and tested. |
 | 3 | Lock-Free MemTable | In Progress | Skip-list memtable and node encoding are implemented with concurrent tests; flush integration and full phase completion remain in progress. |
-| 4 | Durability (WAL) | Planned | Sequential write-ahead log for crash recovery before MemTable visibility. |
+| 4 | Durability (WAL) | In Progress | WAL block layout and WAL staging path are implemented; flush orchestration and durability validation are still in progress. |
 | 5 | Storage Layer (SSTables and io_uring) | Planned | Immutable on-disk tables, block cache, and asynchronous I/O path. |
 | 6 | Compaction | Planned | Background merge and tombstone cleanup to maintain read performance. |
 | 7 | Interface Layer | Planned | Native C++ API, C FFI for language bindings, optional Redis-protocol front door. |
@@ -31,6 +31,8 @@ StrataDB is a systems-focused database engine project built in modern C++ with e
 - TLAB fast-path allocator backed by Arena refill semantics.
 - SkipList memtable with `put`/`remove`/`get`/`scan`, threshold signaling, and lock-free insertion path.
 - SkipList node binary layout with packed sequence+type trailer and overflow-safe allocation sizing.
+- WAL block representation with cache-line aligned metadata, tearing matrix, and bounded record metadata.
+- WAL staging path with per-thread block assembly and handoff queue for flush workers.
 - Unit test suites for config, memory, and memtable subsystems.
 
 ## Advanced Documentation
@@ -44,6 +46,7 @@ Start here for architecture details beyond this README:
 - [docs/architecture/04-thread-local-allocation.md](docs/architecture/04-thread-local-allocation.md)
 - [docs/architecture/05-skiplist-memtable.md](docs/architecture/05-skiplist-memtable.md)
 - [docs/architecture/06-skiplist-node.md](docs/architecture/06-skiplist-node.md)
+- [docs/architecture/07-wal-staging.md](docs/architecture/07-wal-staging.md)
 
 ## Build and Test Quickstart
 
