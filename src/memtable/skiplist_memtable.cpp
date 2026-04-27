@@ -198,7 +198,7 @@ void SkipListMemTable::link_node(SkipListNode* new_node, Splice& splice) noexcep
         return false;
     }
 
-    const std::uint64_t seq = sequence_.fetch_add(1, std::memory_order_acq_rel);
+    const std::uint64_t seq = sequence_.fetch_add(1, std::memory_order_relaxed);
     if (seq > SkipListNode::MAX_SEQUENCE) [[unlikely]] {
         std::fputs("SkipListMemTable sequence exceeded 56-bit trailer range\n", stderr);
         std::terminate();
