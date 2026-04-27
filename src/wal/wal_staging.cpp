@@ -6,7 +6,20 @@
 
 #include <cstring>
 #include <memory>
+#include <unordered_map>
+
 namespace stratadb::wal {
+namespace {
+    constexpr std
+template <std::size_t BlockSize>
+struct ThreadState {
+    WalBlock<BlockSize>* current_block{nullptr};
+    std::unique_ptr<memory::TLAB> tlab{nullptr};
+};
+
+
+} // namespace
+
 template <std::size_t BlockSize>
 thread_local WalBlock<BlockSize>* WalStaging<BlockSize>::tls_current_block_ = nullptr;
 
