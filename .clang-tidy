@@ -3,6 +3,11 @@ Checks: >
   bugprone-*,
   performance-*,
   modernize-*,
+  clang-analyzer-core.*,
+  clang-analyzer-cplusplus.*,
+  clang-analyzer-deadcode.DeadStores,
+  clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling,
+  -clang-analyzer-alpha.*,
   -cppcoreguidelines-owning-memory,
   -cppcoreguidelines-pro-bounds-pointer-arithmetic,
   -cppcoreguidelines-pro-type-reinterpret-cast,
@@ -14,7 +19,12 @@ Checks: >
 
 WarningsAsErrors: >
   bugprone-*,
-  performance-*
+  performance-*,
+  cppcoreguidelines-pro-type-member-init,
+  cppcoreguidelines-pro-type-static-cast-downcast,
+  cppcoreguidelines-special-member-functions,
+  modernize-use-nodiscard,
+  modernize-use-nullptr
 
 HeaderFilterRegex: 'src/|include/'
 
