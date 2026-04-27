@@ -139,8 +139,8 @@ auto SkipListMemTable::random_height() const noexcept -> std::uint8_t {
 
     for (int level = MAX_HEIGHT - 1; level >= 0; --level) {
         auto [prev, next] = walk_forward(cur, level, user_key, seq);
-        splice.prev[level] = prev;
-        splice.next[level] = next;
+        splice.Levels[level].prev = prev;
+        splice.Levels[level].next = next;
         cur = prev;
     }
 
@@ -154,22 +154,26 @@ void SkipListMemTable::link_node(SkipListNode* new_node, Splice& splice) noexcep
 
     for (std::uint8_t level = 0; level < height; ++level) {
         while (true) {
-            SkipListNode* expected_next = splice.next[level];
+            SkipListNode* expected_next = splice.Levels[level].next;
             new_node->next_nodes()[level].store(expected_next, std::memory_order_relaxed);
 
             const bool cas_ok =
-                splice.prev[level]->next_nodes()[level].compare_exchange_strong(expected_next,
-                                                                                new_node,
-                                                                                std::memory_order_release,
-                                                                                std::memory_order_acquire);
+                splice.Levels[level].prev->next_nodes()[level].compare_exchange_strong(expected_next,
+                                                                                       new_node,
+                                                                                       std::memory_order_release,
+                                                                                       std::memory_order_acquire);
 
-            if (cas_ok) {
+            if (cas_ok) [[likely]] {
                 break;
             }
 
             // A failed CAS means concurrent writers changed the search frontier.
-            // Recompute the full splice to avoid using stale upper-level predecessors.
-            splice = find_splice(uk, seq);
+            // we assume from the failed predecessar at exact same level, so we need to walk forward again to find the
+            // correct position for new_node at this level.
+            SkipListNode* cur = splice.Levels[level].prev;
+            auto [new_prev, new_next] = walk_forward(cur, level, uk, seq);
+            splice.Levels[level].prev = new_prev;
+            splice.Levels[level].next = new_next;
         }
     }
 };
