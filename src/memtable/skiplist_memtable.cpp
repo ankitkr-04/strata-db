@@ -199,6 +199,7 @@ void SkipListMemTable::link_node(SkipListNode* new_node, Splice& splice) noexcep
     }
 
     const std::uint64_t seq = sequence_.fetch_add(1, std::memory_order_relaxed);
+
     if (seq > SkipListNode::MAX_SEQUENCE) [[unlikely]] {
         std::fputs("SkipListMemTable sequence exceeded 56-bit trailer range\n", stderr);
         std::terminate();
@@ -216,10 +217,10 @@ void SkipListMemTable::link_node(SkipListNode* new_node, Splice& splice) noexcep
 [[nodiscard]] auto SkipListMemTable::put(std::string_view key, std::string_view value, memory::TLAB& tlab) noexcept
     -> PutResult {
     const std::size_t used = memory_usage();
-    if (used >= stall_trigger_bytes_) {
+    if (used >= stall_trigger_bytes_) [[unlikely]] {
         return PutResult::StallNeeded;
     }
-    if (used >= flush_trigger_bytes_) {
+    if (used >= flush_trigger_bytes_) [[unlikely]] {
         return PutResult::FlushNeeded;
     }
     return insert_node(key, value, ValueType::TypeValue, random_height(), tlab) ? PutResult::Ok
@@ -228,10 +229,10 @@ void SkipListMemTable::link_node(SkipListNode* new_node, Splice& splice) noexcep
 
 [[nodiscard]] auto SkipListMemTable::remove(std::string_view key, memory::TLAB& tlab) noexcept -> PutResult {
     const std::size_t used = memory_usage();
-    if (used >= stall_trigger_bytes_) {
+    if (used >= stall_trigger_bytes_) [[unlikely]] {
         return PutResult::StallNeeded;
     }
-    if (used >= flush_trigger_bytes_) {
+    if (used >= flush_trigger_bytes_) [[unlikely]] {
         return PutResult::FlushNeeded;
     }
 
