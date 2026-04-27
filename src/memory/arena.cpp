@@ -13,6 +13,16 @@
 namespace stratadb::memory {
 namespace {
 
+// Extract macros to seperate place
+#if defined(MAP_HUGETLB)
+constexpr int OS_MAP_HUGE_2MB = MAP_HUGETLB | MAP_HUGE_2MB;
+constexpr int OS_MAP_HUGE_1GB = MAP_HUGETLB | MAP_HUGE_1GB;
+#else
+// Fallbacks for macOS/Windows/Embedded where HugePages aren't supported via mmap
+constexpr int OS_MAP_HUGE_2MB = 0;
+constexpr int OS_MAP_HUGE_1GB = 0;
+#endif
+
 auto try_mmap(std::size_t size, int flags) noexcept -> void* {
     void* ptr = mmap(nullptr, size, PROT_READ | PROT_WRITE, flags, -1, 0);
     return (ptr == MAP_FAILED) ? nullptr : ptr;
@@ -107,54 +117,27 @@ auto Arena::create(const config::MemoryConfig& config) noexcept -> std::expected
     constexpr int base_flags = MAP_PRIVATE | MAP_ANONYMOUS;
 
     void* ptr = nullptr;
-
     switch (page_strategy) {
-
         case config::PageStrategy::Standard4K:
             ptr = try_sequence(total, base_flags, {0});
             break;
 
         case config::PageStrategy::Huge2M_Opportunistic:
-            ptr = try_sequence(total,
-                               base_flags,
-                               {
-#ifdef MAP_HUGETLB
-                                   MAP_HUGETLB | MAP_HUGE_2MB,
-#endif
-                                   0});
+            ptr = try_sequence(total, base_flags, {OS_MAP_HUGE_2MB, 0});
             break;
 
         case config::PageStrategy::Huge2M_Strict:
-            ptr = try_sequence(total,
-                               base_flags,
-                               {
-#ifdef MAP_HUGETLB
-                                   MAP_HUGETLB | MAP_HUGE_2MB
-#endif
-                               });
+            ptr = try_sequence(total, base_flags, {OS_MAP_HUGE_2MB});
             if (!ptr)
                 return std::unexpected(ArenaError::MmapFailed);
             break;
 
         case config::PageStrategy::Huge1G_Opportunistic:
-            ptr = try_sequence(total,
-                               base_flags,
-                               {
-#ifdef MAP_HUGETLB
-                                   MAP_HUGETLB | MAP_HUGE_1GB,
-                                   MAP_HUGETLB | MAP_HUGE_2MB,
-#endif
-                                   0});
+            ptr = try_sequence(total, base_flags, {OS_MAP_HUGE_1GB, OS_MAP_HUGE_2MB, 0});
             break;
 
         case config::PageStrategy::Huge1G_Strict:
-            ptr = try_sequence(total,
-                               base_flags,
-                               {
-#ifdef MAP_HUGETLB
-                                   MAP_HUGETLB | MAP_HUGE_1GB
-#endif
-                               });
+            ptr = try_sequence(total, base_flags, {OS_MAP_HUGE_1GB});
             if (!ptr)
                 return std::unexpected(ArenaError::MmapFailed);
             break;
