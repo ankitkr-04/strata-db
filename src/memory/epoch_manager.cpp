@@ -7,6 +7,18 @@
 #include <thread>
 
 namespace stratadb::memory {
+namespace {
+// Support up to 64 StratDB instances in the same process (tuning parameter)
+constexpr std::size_t MAX_DB_INSTANCES = 64;
+std::atomic<std::size_t> global_instance_counter{0};
+
+thread_local std::array<std::size_t, MAX_DB_INSTANCES> tl_epoch_slots = [] {
+    std::array<std::size_t, MAX_DB_INSTANCES> slots{};
+    slots.fill(std::numeric_limits<std::size_t>::max());
+    return slots;
+}();
+
+} // namespace
 
 auto EpochManager::register_thread() noexcept -> std::expected<void, EpochError> {
     // Each thread must register exactly once
