@@ -12,7 +12,15 @@
 namespace stratadb::memory {
 enum class EpochError : std::uint8_t { ThreadLimitExceeded };
 class EpochManager {
+
   public:
+    EpochManager() noexcept;
+    ~EpochManager() noexcept;
+    EpochManager(const EpochManager&) = delete;
+    EpochManager(EpochManager&&) = delete;
+    auto operator=(const EpochManager&) -> EpochManager& = delete;
+    auto operator=(EpochManager&&) -> EpochManager& = delete;
+
     class [[nodiscard]] ReadGuard {
       public:
         [[nodiscard]] explicit ReadGuard(EpochManager& mgr) noexcept
@@ -134,7 +142,7 @@ class EpochManager {
     inline static thread_local std::size_t thread_index_{INVALID_THREAD};
 
   private:
-  [[nodiscard]] auto my_thread_index() const noexcept -> std::size_t;
+    [[nodiscard]] auto my_thread_index() const noexcept -> std::size_t;
     void retire_node(void* ptr, void (*deleter)(void*)) noexcept;
     void enter() noexcept;
     void leave() noexcept;
