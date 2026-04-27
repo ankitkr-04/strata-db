@@ -1,4 +1,5 @@
 #include "stratadb/memory/arena.hpp"
+#include "stratadb/utils/hardware.hpp"
 
 #include <atomic>
 #include <gtest/gtest.h>
@@ -53,6 +54,8 @@ TEST(Arena, AllocateBlockLarge) {
     auto cfg = make_config(20ULL * 1024 * 1024);
 
     auto arena = Arena::create(cfg).value();
+    const std::size_t expected_alignment =
+        (cfg.block_alignment_bytes == 0) ? stratadb::utils::system_page_size() : cfg.block_alignment_bytes;
 
     std::size_t req = 5ULL * 1024 * 1024;
 
@@ -60,20 +63,22 @@ TEST(Arena, AllocateBlockLarge) {
 
     ASSERT_FALSE(span.empty());
     EXPECT_GE(span.size(), req);
-    EXPECT_EQ(span.size() % cfg.block_alignment_bytes, 0u);
+    EXPECT_EQ(span.size() % expected_alignment, 0u);
 }
 
 TEST(Arena, Alignment) {
     auto cfg = make_config(10ULL * 1024 * 1024);
 
     auto arena = Arena::create(cfg).value();
+    const std::size_t expected_alignment =
+        (cfg.block_alignment_bytes == 0) ? stratadb::utils::system_page_size() : cfg.block_alignment_bytes;
 
     auto span = arena.allocate_block(128);
 
     ASSERT_FALSE(span.empty());
 
     auto ptr = reinterpret_cast<std::uintptr_t>(span.data());
-    EXPECT_EQ(ptr % cfg.block_alignment_bytes, 0u);
+    EXPECT_EQ(ptr % expected_alignment, 0u);
 }
 
 TEST(Arena, OutOfMemory) {

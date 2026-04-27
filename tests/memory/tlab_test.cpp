@@ -1,5 +1,6 @@
 #include "stratadb/memory/arena.hpp"
 #include "stratadb/memory/tlab.hpp"
+#include "stratadb/utils/hardware.hpp"
 
 #include <gtest/gtest.h>
 #include <random>
@@ -62,7 +63,7 @@ TEST(TLAB, SequentialAllocation) {
 // ---------- REFILL ----------
 
 TEST(TLAB, RefillTrigger) {
-    auto arena = Arena::create(make_config(16ULL * 1024, MemoryConfig::DEFAULT_BLOCK_ALIGNMENT)).value();
+    auto arena = Arena::create(make_config(16ULL * 1024, 4ULL * 1024)).value();
     TLAB tlab(arena);
 
     std::vector<void*> ptrs;
@@ -80,20 +81,21 @@ TEST(TLAB, RefillTrigger) {
 }
 
 TEST(TLAB, RefillsForSmallAllocationWhenTinySlackRemains) {
-    auto arena = Arena::create(make_config(16ULL * 1024, MemoryConfig::DEFAULT_BLOCK_ALIGNMENT)).value();
+    auto arena = Arena::create(make_config(16ULL * 1024, 4ULL * 1024)).value();
     TLAB tlab(arena);
+    const std::size_t expected_alignment = stratadb::utils::system_page_size();
 
     for (std::size_t i = 0; i < 127; ++i) {
         ASSERT_NE(tlab.allocate(32, 8), nullptr);
     }
 
-    EXPECT_EQ(arena.memory_used(), MemoryConfig::DEFAULT_BLOCK_ALIGNMENT);
+    EXPECT_EQ(arena.memory_used(), expected_alignment);
 
     ASSERT_NE(tlab.allocate(64, 8), nullptr);
-    EXPECT_EQ(arena.memory_used(), MemoryConfig::DEFAULT_BLOCK_ALIGNMENT * 2);
+    EXPECT_EQ(arena.memory_used(), expected_alignment * 2);
 
     ASSERT_NE(tlab.allocate(64, 8), nullptr);
-    EXPECT_EQ(arena.memory_used(), MemoryConfig::DEFAULT_BLOCK_ALIGNMENT * 2);
+    EXPECT_EQ(arena.memory_used(), expected_alignment * 2);
 }
 
 // ---------- EXACT BOUNDARY ----------

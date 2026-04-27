@@ -29,6 +29,12 @@ void do_not_optimize(const T& value) noexcept {
 struct TrackableConfig : public MutableConfig {
     static std::atomic<int> destructions;
 
+    TrackableConfig() = default;
+    TrackableConfig(const TrackableConfig&) = default;
+    TrackableConfig(TrackableConfig&&) noexcept = default;
+    auto operator=(const TrackableConfig&) -> TrackableConfig& = default;
+    auto operator=(TrackableConfig&&) noexcept -> TrackableConfig& = default;
+
     ~TrackableConfig() {
         destructions.fetch_add(1, std::memory_order_relaxed);
     }
@@ -49,7 +55,7 @@ TEST(ConfigManagerTest, BasicRead) {
         auto guard = mgr.get_mutable();
         auto& cfg = guard.get();
 
-        ASSERT_EQ(cfg.background_compaction_threads, 2);
+        ASSERT_EQ(cfg.background_compaction_threads, MutableConfig::default_compaction_threads());
     }
 }
 
@@ -85,6 +91,7 @@ TEST(ConfigManagerTest, ConcurrentReaders) {
     constexpr int ITERS = 10000;
 
     std::vector<std::jthread> threads;
+    threads.reserve(NUM_THREADS);
 
     for (int i = 0; i < NUM_THREADS; ++i) {
         threads.emplace_back([&] {
@@ -113,6 +120,7 @@ TEST(ConfigManagerTest, ConcurrentReadWrite) {
     std::atomic<bool> start{false};
 
     std::vector<std::jthread> threads;
+    threads.reserve(NUM_READERS + 1);
 
     for (int i = 0; i < NUM_READERS; ++i) {
         threads.emplace_back([&] {
@@ -159,6 +167,7 @@ TEST(ConfigManagerTest, NoUseAfterFreeStress) {
     constexpr int ITERS = 20000;
 
     std::vector<std::jthread> threads;
+    threads.reserve(NUM_THREADS + 1);
 
     for (int i = 0; i < NUM_THREADS; ++i) {
         threads.emplace_back([&] {
