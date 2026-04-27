@@ -4,9 +4,11 @@ Checks: >
   performance-*,
   modernize-*,
   clang-analyzer-core.*,
+   clang-diagnostic-*,
   clang-analyzer-cplusplus.*,
   clang-analyzer-deadcode.DeadStores,
   clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling,
+  
   -clang-analyzer-alpha.*,
   -cppcoreguidelines-owning-memory,
   -cppcoreguidelines-pro-bounds-pointer-arithmetic,
