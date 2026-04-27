@@ -1,8 +1,8 @@
 #pragma once
 
 #include <cstddef>
-#include <new>
 #include <cstdint>
+#include <new>
 
 namespace stratadb::utils {
 #if defined(__cpp_lib_hardware_interference_size) && (__cpp_lib_hardware_interference_size >= 201603L)
@@ -12,6 +12,10 @@ inline constexpr std::size_t CACHE_CONSTRUCT_SIZE = std::hardware_constructive_i
 inline constexpr std::size_t CACHE_LINE_SIZE = 64UZ;
 inline constexpr std::size_t CACHE_CONSTRUCT_SIZE = 64UZ;
 #endif
+
+// A safe upper bound for thread-local arrays and epoch masks, allowing massive
+// server-grade concurrency without dynamic allocation. Must be a multiple of 64.
+inline constexpr std::size_t MAX_SUPPORTED_THREADS = 256;
 
 inline constexpr std::size_t DEFAULT_ATOMIC_WRITE_BOUNDARY = 4096;
 
