@@ -14,7 +14,8 @@ struct MemoryConfig {
     static constexpr std::size_t DEFAULT_TLAB_SIZE = 2_MiB;
     // Intentionally independent from ImmutableConfig::DEFAULT_BLOCK_SIZE_BYTES.
     // This controls allocator alignment, not SSTable block layout.
-    static constexpr std::size_t DEFAULT_BLOCK_ALIGNMENT = 4096;
+    //0 signifies autodetect, will query system page size at initialization and align to that if possible.
+    static constexpr std::size_t DEFAULT_BLOCK_ALIGNMENT = 0;
 
     PageStrategy page_strategy{PageStrategy::Huge2M_Opportunistic};
     NumaPolicy numa_policy{NumaPolicy::UMA}; // Default to UMA for embedded safety
