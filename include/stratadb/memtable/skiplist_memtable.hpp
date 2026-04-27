@@ -66,9 +66,12 @@ class SkipListMemTable {
     }
 
   private:
-    struct Splice {
-        SkipListNode* prev[SkipListMemTable::MAX_HEIGHT];
-        SkipListNode* next[SkipListMemTable::MAX_HEIGHT];
+    struct alignas(utils::CACHE_LINE_SIZE) Splice {
+        struct Level {
+            SkipListNode* prev{nullptr};
+            SkipListNode* next{nullptr};
+        };
+        Level Levels[MAX_HEIGHT];
     };
 
     memory::Arena& arena_;
