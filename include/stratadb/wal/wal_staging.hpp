@@ -32,9 +32,7 @@ struct StagedRecord {
 template <std::size_t BlockSize>
 class WalStaging {
   public:
-    WalStaging(memory::EpochManager& epoch_manager, memory::Arena& staging_arena) noexcept
-        : epoch_manager_(&epoch_manager)
-        , staging_arena_(&staging_arena) {}
+    WalStaging(memory::EpochManager& epoch_manager, memory::Arena& staging_arena) noexcept;
 
     // Hot Path
     //  Called by users thread inside db->put()/db->delete() to stage the record for later flush to dixxxxsk.
