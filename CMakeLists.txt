@@ -138,39 +138,39 @@ gtest_discover_tests(stratadb_tests)
 
 # ===================== BENCHMARKING =======================
 if(STRATADB_BUILD_BENCHMARKS)
-  if(NOT CMAKE_BUILD_TYPE STREQUAL "Release")
-    message(WARNING "Benchmarks are intended to be built with -DCMAKE_BUILD_TYPE=Release")
-  endif()
+  if(CMAKE_BUILD_TYPE STREQUAL "Release" AND NOT STRATADB_ENABLE_ASAN AND NOT STRATADB_ENABLE_UBSAN AND NOT STRATADB_ENABLE_TSAN)
+    add_library(stratadb_benchmark_flags INTERFACE)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+      target_compile_options(stratadb_benchmark_flags INTERFACE -O3 -march=native)
+    endif()
 
-  add_library(stratadb_benchmark_flags INTERFACE)
-  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-    target_compile_options(stratadb_benchmark_flags INTERFACE -O3 -march=native)
-  endif()
-
-  fetchcontent_declare(
-    benchmark
-    URL https://github.com/google/benchmark/archive/refs/tags/v1.9.5.tar.gz
-  )
-  set(BENCHMARK_ENABLE_GTEST_TESTS OFF CACHE BOOL "" FORCE)
-  set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
-  set(BENCHMARK_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
-  fetchcontent_makeavailable(benchmark)
-
-  # Macro to streamline benchmark creation
-  macro(add_stratadb_benchmark name source_file)
-    add_executable(${name} ${source_file})
-    target_link_libraries(${name} PRIVATE
-      stratadb
-      stratadb_warnings
-      stratadb_benchmark_flags
-      benchmark::benchmark
-      benchmark::benchmark_main
+    fetchcontent_declare(
+      benchmark
+      URL https://github.com/google/benchmark/archive/refs/tags/v1.9.5.tar.gz
     )
-    target_compile_features(${name} PUBLIC cxx_std_26)
-    enable_mold_linker(${name})
-  endmacro()
+    set(BENCHMARK_ENABLE_GTEST_TESTS OFF CACHE BOOL "" FORCE)
+    set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+    set(BENCHMARK_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+    fetchcontent_makeavailable(benchmark)
 
-  add_stratadb_benchmark(allocator_bench benchmarks/allocator_bench.cpp)
-  add_stratadb_benchmark(tlab_bench benchmarks/tlab_bench.cpp)
-  add_stratadb_benchmark(page_bench benchmarks/page_bench.cpp)
+    # Macro to streamline benchmark creation
+    macro(add_stratadb_benchmark name source_file)
+      add_executable(${name} ${source_file})
+      target_link_libraries(${name} PRIVATE
+        stratadb
+        stratadb_warnings
+        stratadb_benchmark_flags
+        benchmark::benchmark
+        benchmark::benchmark_main
+      )
+      target_compile_features(${name} PUBLIC cxx_std_26)
+      enable_mold_linker(${name})
+    endmacro()
+
+    add_stratadb_benchmark(allocator_bench benchmarks/allocator_bench.cpp)
+    add_stratadb_benchmark(tlab_bench benchmarks/tlab_bench.cpp)
+    add_stratadb_benchmark(page_bench benchmarks/page_bench.cpp)
+  else()
+    message(STATUS "Benchmarks are skipped unless building Release without sanitizers")
+  endif()
 endif()
