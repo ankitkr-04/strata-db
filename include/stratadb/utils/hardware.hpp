@@ -19,6 +19,9 @@ inline constexpr std::size_t MAX_SUPPORTED_THREADS = 256;
 
 inline constexpr std::size_t DEFAULT_ATOMIC_WRITE_BOUNDARY = 4096;
 
+// Used to size the O(1) thread-local lookup arrays.
+inline constexpr std::size_t MAX_DB_INSTANCES = 64;
+
 // Probes the OS for the disk's physical sector size (AWUPF).
 [[nodiscard]] auto probe_atomic_write_boundary(int fd,
                                                std::size_t fallback_size = DEFAULT_ATOMIC_WRITE_BOUNDARY) noexcept

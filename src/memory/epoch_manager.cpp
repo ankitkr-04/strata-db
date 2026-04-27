@@ -10,7 +10,7 @@
 namespace stratadb::memory {
 namespace {
 // Support up to 64 StratDB instances in the same process (tuning parameter)
-constexpr std::size_t MAX_DB_INSTANCES = 64;
+constexpr std::size_t MAX_DB_INSTANCES = utils::MAX_DB_INSTANCES;
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 std::atomic<std::size_t> global_instance_counter{0};
 
@@ -210,9 +210,8 @@ void EpochManager::reclaim() noexcept {
             ++write_idx;
         }
     }
-    state.slab_count = write_idx; //Outside the loop
+    state.slab_count = write_idx; // Outside the loop
 
-    
     if (state.overflow_count > 0) {
         write_idx = 0;
         for (std::uint32_t i = 0; i < state.overflow_count; ++i) {
