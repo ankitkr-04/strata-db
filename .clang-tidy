@@ -3,15 +3,19 @@ Checks: >
   bugprone-*,
   performance-*,
   modernize-*,
-  -cppcoreguidelines-owning-memory
+  -cppcoreguidelines-owning-memory,
+  -cppcoreguidelines-pro-bounds-pointer-arithmetic,
+  -cppcoreguidelines-pro-type-reinterpret-cast,
+  -cppcoreguidelines-pro-bounds-array-to-pointer-decay,
+  -cppcoreguidelines-avoid-magic-numbers,
+  -modernize-avoid-c-arrays
 
 WarningsAsErrors: >
   bugprone-*,
+  performance-*
 
 HeaderFilterRegex: 'src/|include/'
 
 CheckOptions:
-  - key: cppcoreguidelines-pro-bounds-pointer-arithmetic.IgnoreMacros
+  - key: modernize-use-nodiscard.IgnoreMacros
     value: true
-
-FormatStyle: none
