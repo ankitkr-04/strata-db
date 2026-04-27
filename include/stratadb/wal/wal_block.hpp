@@ -11,20 +11,24 @@ namespace stratadb::wal {
 // matching the hardware's AWUPF (Atomic Write Unit Power Fail) boundary.
 template <std::size_t BlockSize>
 struct alignas(BlockSize) WalBlock {
-    static constexpr std::size_t HEADER_BYTES =
-        utils::CACHE_LINE_SIZE; // Full header size including padding, aligned to cache line
+    static constexpr std::size_t HEADER_BYTES = utils::CACHE_LINE_SIZE;
     static constexpr std::size_t CACHE_LINES = BlockSize / HEADER_BYTES;
-    // Tearing Matrix: 1 byte per cache line
+
     static constexpr std::size_t TEARING_MATRIX_BYTES = CACHE_LINES;
     static constexpr std::size_t TEARING_MATRIX_PADDED =
         (TEARING_MATRIX_BYTES + HEADER_BYTES - 1) & ~(HEADER_BYTES - 1);
 
-    static constexpr std::size_t HEADER_DATA_BYTES =
-        38; // Actual data in the header, excluding padding. This is used to calculate the payload size accurately.
-
+    static constexpr std::size_t HEADER_DATA_BYTES = 38;
     static constexpr std::size_t METADATA_BYTES = 128;
 
-    static constexpr std::size_t PAYLOAD_BYTES = BlockSize - HEADER_BYTES - TEARING_MATRIX_PADDED - METADATA_BYTES;
+    // Unified capacity constant to prevent array mismatch
+    static constexpr std::size_t MAX_RECORDS = 32;
+
+    // Protect against unsigned underflow for non-standard BlockSizes
+    static constexpr std::size_t OVERHEAD_BYTES = HEADER_BYTES + TEARING_MATRIX_PADDED + METADATA_BYTES;
+    static_assert(BlockSize > OVERHEAD_BYTES, "BlockSize too small to contain WAL metadata");
+
+    static constexpr std::size_t PAYLOAD_BYTES = BlockSize - OVERHEAD_BYTES;
 
     struct alignas(utils::CACHE_LINE_SIZE) Header {
         std::uint64_t sequence_id;           // Global logical sequence number
@@ -39,6 +43,7 @@ struct alignas(BlockSize) WalBlock {
             padding[HEADER_BYTES - HEADER_DATA_BYTES]; // Pad the header to fill one cache line, ensuring the tearing
                                                        // matrix starts on a new cache line for atomicity detection.
     } header;
+    static_assert(sizeof(Header) == HEADER_BYTES, "Header size mismatch. Update HEADER_DATA_BYTES.");
 
     // Cache line 1 to N: Scalable Tearing Matrix for atomicity detection. Each byte corresponds to a cache line in the
     // payload.
@@ -46,13 +51,19 @@ struct alignas(BlockSize) WalBlock {
         std::uint8_t generation_counters[TEARING_MATRIX_PADDED];
     } tearing_matrix;
 
+    static_assert(sizeof(TearingMatrix) == TEARING_MATRIX_PADDED, "TearingMatrix size mismatch.");
+    static_assert(offsetof(WalBlock, tearing_matrix) == HEADER_BYTES, "TearingMatrix must follow Header.");
+
     // -cache line N+1: Metadata for the payload, such as key lengths and operation types. This is separate from the
     // header SoA Metadata(128 bytes) is designed to fit within 2 cache lines, allowing for efficient access without
     // interfering with the tearing matrix.
     struct alignas(utils::CACHE_LINE_SIZE) VectorMetadata {
-        std::uint8_t opcodes[64];      // Insert/Delete/Commit flags
-        std::uint16_t key_lengths[32]; // Length of keys in payload
+        std::uint8_t opcodes[MAX_RECORDS];      // Insert/Delete/Commit flags
+        std::uint16_t key_lengths[MAX_RECORDS]; // Length of keys in payload
+        std::uint8_t _pad[METADATA_BYTES
+                          - 96]; // Pad to fill the metadata block, ensuring the payload starts on a new cache line.
     } metadata;
+    static_assert(sizeof(VectorMetadata) == METADATA_BYTES, "VectorMetadata size mismatch.");
 
     // Remaining Cache Lines: Payload data, such as keys and values. The payload is designed to be as large as possible
     // while still fitting within the block size after accounting for the header, tearing matrix, and metadata.
@@ -61,6 +72,7 @@ struct alignas(BlockSize) WalBlock {
     } payload;
 
     static_assert((BlockSize & (BlockSize - 1)) == 0, "BlockSize must be a power of two");
+    static_assert(sizeof(WalBlock) == BlockSize, "WalBlock size mismatch with BlockSize template parameter");
 };
 
 } // namespace stratadb::wal
