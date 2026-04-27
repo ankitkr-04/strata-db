@@ -80,7 +80,7 @@ Arena::Arena(Arena&& other) noexcept
     other.config_.total_budget_bytes = 0;
 }
 
-Arena& Arena::operator=(Arena&& other) noexcept {
+auto Arena::operator=(Arena&& other) noexcept -> Arena& {
     if (this != &other) {
         if (base_) {
             munmap(base_, config_.total_budget_bytes);
@@ -203,7 +203,7 @@ auto Arena::bump_allocate(std::size_t size, std::size_t alignment) noexcept -> s
         }
 
         const std::size_t next = aligned_offset + size;
-        if (offset_.compare_exchange_weak(old, next, std::memory_order_acq_rel, std::memory_order_relaxed)) {
+        if (offset_.compare_exchange_weak(old, next, std::memory_order_release, std::memory_order_relaxed)) {
             return aligned_offset;
         }
     }
