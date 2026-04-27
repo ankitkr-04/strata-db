@@ -11,7 +11,7 @@ namespace stratadb::memtable {
 namespace {
 
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
-thread_local std::uint64_t tl_rng = [] {
+thread_local std::uint64_t tl_rng = [] -> unsigned long {
     auto seed = reinterpret_cast<uintptr_t>(&tl_rng);
 
     seed ^= seed >> 33;
@@ -41,7 +41,7 @@ auto xorshift64() noexcept -> std::uint64_t {
         const bool node_beyond = node_uk.size() > prefix_len;
         const bool srch_beyond = user_key.size() > prefix_len;
 
-        if (node_beyond || srch_beyond) [[likely]] {
+        if (node_beyond || srch_beyond) {
             const std::size_t min_len = std::min(node_uk.size(), user_key.size());
             cmp = std::memcmp(node_uk.data() + prefix_len, user_key.data() + prefix_len, min_len - prefix_len);
         }
@@ -124,7 +124,9 @@ auto SkipListMemTable::make_head() noexcept -> SkipListNode* {
 
 auto SkipListMemTable::random_height() const noexcept -> std::uint8_t {
     std::uint8_t height = 1;
-    while (height < MAX_HEIGHT && (xorshift64() % BRANCHING_FACTOR) == 0) {
+    static_assert(std::has_single_bit(static_cast<unsigned int>(BRANCHING_FACTOR)),
+                  "BRANCHING_FACTOR must be a power of two for unbiased height distribution");
+    while (height < MAX_HEIGHT && (xorshift64() & (BRANCHING_FACTOR - 1u)) == 0) {
         ++height;
     }
     return height;
