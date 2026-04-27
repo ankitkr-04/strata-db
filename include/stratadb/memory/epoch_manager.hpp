@@ -8,7 +8,6 @@
 #include <cstdint>
 #include <expected>
 #include <limits>
-#include <vector>
 
 namespace stratadb::memory {
 enum class EpochError : std::uint8_t { ThreadLimitExceeded };
@@ -79,9 +78,7 @@ class EpochManager {
         return thread_index_ != INVALID_THREAD;
     }
 
-    [[nodiscard]] auto current_epoch() const noexcept -> std::uint64_t {
-        return global_epoch_.load(std::memory_order_relaxed);
-    }
+    [[nodiscard]] auto current_epoch() const noexcept -> std::uint64_t;
 
     // Internal maintenance hook for external components/tests that need deterministic progress.
     // Requires current thread to be registered.
@@ -91,8 +88,8 @@ class EpochManager {
     void force_reclaim_all() noexcept;
 
   private:
-    // 128 threads x 64-byte padded ThreadState ~= 8KB bookkeeping.
-    static constexpr std::size_t MAX_THREADS = 128;
+    // get threads from utils
+    static constexpr std::size_t MAX_THREADS = utils::MAX_SUPPORTED_THREADS;
     static constexpr std::size_t MASK_WORD_BITS = std::numeric_limits<std::uint64_t>::digits;
     static constexpr std::size_t ACTIVE_THREAD_MASK_WORDS = MAX_THREADS / MASK_WORD_BITS;
     // Throughput tuning knob: trigger epoch advance/reclaim every N retirements.
@@ -112,7 +109,16 @@ class EpochManager {
 
     struct alignas(stratadb::utils::CACHE_LINE_SIZE) ThreadState {
         std::atomic<std::uint64_t> state{INACTIVE_EPOCH};
-        std::vector<RetireNode> retire_list_;
+        std::uint32_t slab_count{0};
+        std::uint32_t overflow_count{0};
+        std::uint32_t overflow_capacity{0};
+
+        // 4096Bytes(1 OS page/64 cache lines) to prevent TLB straddling
+        // 168 * 24bytes = 4032 bytes + 32 bytes metadata+ 32 bytes padding = 4096 bytes
+        static constexpr std::size_t SLAB_CAPACITY = 168;
+        RetireNode slab[SLAB_CAPACITY];
+
+        RetireNode* overflow{nullptr}; // if backpressure fails, we spill into an overflow list.
     };
 
     struct alignas(stratadb::utils::CACHE_LINE_SIZE) ActiveThreadMaskWord {
@@ -121,18 +127,21 @@ class EpochManager {
 
   private:
     std::atomic<std::uint64_t> global_epoch_{0};
-
+    std::size_t instance_id_{0};
     std::array<ThreadState, MAX_THREADS> thread_states_{};
     std::array<ActiveThreadMaskWord, ACTIVE_THREAD_MASK_WORDS> active_thread_masks_{};
 
     inline static thread_local std::size_t thread_index_{INVALID_THREAD};
 
   private:
+  [[nodiscard]] auto my_thread_index() const noexcept -> std::size_t;
     void retire_node(void* ptr, void (*deleter)(void*)) noexcept;
     void enter() noexcept;
     void leave() noexcept;
-    void advance_epoch() noexcept;
+
+    void try_advance_epoch() noexcept;
     void reclaim() noexcept;
+
     [[nodiscard]] auto register_thread() noexcept -> std::expected<void, EpochError>;
     void unregister_thread();
 };
