@@ -52,7 +52,6 @@ struct alignas(BlockSize) WalBlock {
     } tearing_matrix;
 
     static_assert(sizeof(TearingMatrix) == TEARING_MATRIX_PADDED, "TearingMatrix size mismatch.");
-    static_assert(offsetof(WalBlock, tearing_matrix) == HEADER_BYTES, "TearingMatrix must follow Header.");
 
     // -cache line N+1: Metadata for the payload, such as key lengths and operation types. This is separate from the
     // header SoA Metadata(128 bytes) is designed to fit within 2 cache lines, allowing for efficient access without
@@ -73,7 +72,10 @@ struct alignas(BlockSize) WalBlock {
     } payload;
 
     static_assert((BlockSize & (BlockSize - 1)) == 0, "BlockSize must be a power of two");
-    static_assert(sizeof(WalBlock) == BlockSize, "WalBlock size mismatch with BlockSize template parameter");
 };
 
+// asserting just one of many implementation, template declaration are not supported in static asserts, so we pick a
+// common one for validation. The rest will be guaranteed by the compiler.
+static_assert(offsetof(WalBlock<512>, tearing_matrix) == WalBlock<512>::HEADER_BYTES);
+static_assert(sizeof(WalBlock<512>) == 512, "WalBlock size mismatch with BlockSize template parameter");
 } // namespace stratadb::wal
