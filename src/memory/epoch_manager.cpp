@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <bit>
 #include <cassert>
+#include <chrono>
 #include <cstdio>
 #include <thread>
 
@@ -19,6 +20,23 @@ thread_local std::array<std::size_t, MAX_DB_INSTANCES> tl_epoch_slots = [] {
 }();
 
 } // namespace
+
+EpochManager::EpochManager() noexcept
+    : instance_id_(global_instance_counter.fetch_add(1, std::memory_order_relaxed)) {
+
+    if (instance_id_ >= MAX_DB_INSTANCES) {
+        std::fputs("EpochManager instance limit exceeded\n", stderr);
+        std::terminate();
+    }
+}
+
+EpochManager::~EpochManager() noexcept {
+    force_reclaim_all();
+}
+
+auto EpochManager::my_thread_index() const noexcept -> std::size_t {
+    return tl_epoch_slots[instance_id_];
+}
 
 auto EpochManager::register_thread() noexcept -> std::expected<void, EpochError> {
     // Each thread must register exactly once
@@ -53,11 +71,10 @@ auto EpochManager::register_thread() noexcept -> std::expected<void, EpochError>
 }
 
 void EpochManager::unregister_thread() {
-    assert(thread_index_ != INVALID_THREAD);
+    const std::size_t slot = my_thread_index();
+    assert(slot != INVALID_THREAD);
 
-    const std::size_t slot = thread_index_;
     auto& state = thread_states_[slot];
-
     // Ensure thread is not visible as active
     state.state.store(INACTIVE_EPOCH, std::memory_order_release);
 
@@ -72,54 +89,87 @@ void EpochManager::unregister_thread() {
 }
 
 void EpochManager::enter() noexcept {
-    assert(thread_index_ != INVALID_THREAD);
+    const std::size_t slot = my_thread_index();
+    assert(slot != INVALID_THREAD);
     std::uint64_t e = global_epoch_.load(std::memory_order_acquire);
 
-    thread_states_[thread_index_].state.store(e, std::memory_order_release);
+    thread_states_[slot].state.store(e, std::memory_order_release);
 }
 
 void EpochManager::leave() noexcept {
-    assert(thread_index_ != INVALID_THREAD);
-    thread_states_[thread_index_].state.store(INACTIVE_EPOCH, std::memory_order_release);
+    const std::size_t slot = my_thread_index();
+    assert(slot != INVALID_THREAD);
+    thread_states_[slot].state.store(INACTIVE_EPOCH, std::memory_order_release);
+}
+
+auto EpochManager::current_epoch() const noexcept -> std::uint64_t {
+    return global_epoch_.load(std::memory_order_acquire);
+}
+
+void EpochManager::try_advance_epoch() noexcept {
+    // Advance global epoch (logical time)
+    // acq_rel ensures ordering with readers/writers
+    std::uint64_t current = global_epoch_.load(std::memory_order_relaxed);
+    global_epoch_.compare_exchange_strong(current, current + 1, std::memory_order_release, std::memory_order_relaxed);
 }
 
 void EpochManager::quiescent_reclaim() noexcept {
-    assert(thread_index_ != INVALID_THREAD);
-    advance_epoch();
+    assert(my_thread_index() != INVALID_THREAD);
+    try_advance_epoch();
     reclaim();
 }
-
-void EpochManager::advance_epoch() noexcept {
-    // Advance global epoch (logical time)
-    // acq_rel ensures ordering with readers/writers
-    global_epoch_.fetch_add(1, std::memory_order_acq_rel);
-}
-
 void EpochManager::retire_node(void* ptr, void (*deleter)(void*)) noexcept {
-    assert(thread_index_ != INVALID_THREAD);
-    auto& state = thread_states_[thread_index_];
+    const std::size_t slot = my_thread_index();
+    assert(slot != INVALID_THREAD);
+    auto& state = thread_states_[slot];
 
     // Tag node with current epoch
     // Meaning: may still be visible to threads in ≤ this epoch
     std::uint64_t retire_epoch = global_epoch_.load(std::memory_order_acquire);
+    RetireNode node{.ptr = ptr, .deleter = deleter, .retire_epoch = retire_epoch};
 
-    // Add to thread-local retire list (no synchronization needed).
-    // Vector growth may throw; translate that into a deterministic terminate path with diagnostics.
-    try {
-        state.retire_list_.push_back(RetireNode{.ptr = ptr, .deleter = deleter, .retire_epoch = retire_epoch});
-    } catch (...) {
-        std::fputs("EpochManager::retire_node failed to grow retire list\n", stderr);
-        std::terminate();
+    // Fast path: Push to L1 cache slab
+    if (state.slab_count < ThreadState::SLAB_CAPACITY) {
+        state.slab[state.slab_count++] = node;
+
+    } else {
+        // Slow path: Backpressure via overflow list
+        if (state.overflow_count == ThreadState::SLAB_CAPACITY) {
+            std::uint32_t new_capacity = state.overflow_capacity == 0 ? 256 : state.overflow_capacity * 2;
+            auto* new_overflow = new (std::nothrow) RetireNode[new_capacity];
+            if (!new_overflow) {
+                std::fputs("Failed to allocate overflow retire list\n", stderr);
+                std::terminate();
+            }
+            if (state.overflow) {
+                std::copy(state.overflow, state.overflow + state.overflow_count, new_overflow);
+                delete[] state.overflow;
+            }
+            state.overflow = new_overflow;
+            state.overflow_capacity = new_capacity;
+        }
+        state.overflow[state.overflow_count++] = node;
     }
 
-    if ((state.retire_list_.size() & RECLAIM_INTERVAL_MASK) == 0) [[unlikely]] {
-        // Advance epoch after every RECLAIM_INTERVAL retirements.
-        advance_epoch();
-        // Periodically attempt to reclaim.
+    const std::size_t total_retired = state.slab_count + state.overflow_count;
+
+    if ((total_retired & RECLAIM_INTERVAL_MASK) == 0) [[unlikely]] {
+        try_advance_epoch();
         reclaim();
 
-        if (state.retire_list_.size() > RETIRE_LIST_THRESHOLD) {
-            std::this_thread::yield(); // back off if retire list grows too large (tuning parameter)
+        static thread_local std::uint32_t backoff_us = 1;
+        // Backpressure: if too many unreclaimed nodes, yield to give other threads a chance to reclaim
+        if (total_retired > RETIRE_LIST_THRESHOLD) [[unlikely]] {
+
+            std::this_thread::sleep_for(std::chrono::microseconds(backoff_us));
+            backoff_us = std::min(backoff_us * 2u, 1000u); // cap backoff at 1ms
+
+            if (total_retired > RETIRE_LIST_THRESHOLD * 4) {
+                reclaim(); // if still too high, do a synchronous reclaim before yielding again
+            }
+
+        } else {
+            backoff_us = 1;
         }
     }
 }
