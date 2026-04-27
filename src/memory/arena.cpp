@@ -7,9 +7,9 @@
 #include <cerrno>
 #include <cstring>
 #include <limits>
+#include <numa.h>
 #include <numaif.h>
 #include <sys/mman.h>
-
 namespace stratadb::memory {
 namespace {
 
@@ -37,8 +37,15 @@ auto apply_numa_policy(void* ptr, std::size_t total, config::NumaPolicy policy) 
             return true;
 
         case config::NumaPolicy::Interleaved: {
-            unsigned long nodemask = ~0UL;
-            return mbind(ptr, total, MPOL_INTERLEAVE, &nodemask, sizeof(nodemask) * 8, kFlags) == 0;
+            // fix sparse topology
+            struct bitmask* nodes = numa_get_mems_allowed();
+            if (!nodes) {
+                return false;
+            }
+
+            const long result = mbind(ptr, total, MPOL_INTERLEAVE, nodes->maskp, nodes->size + 1, kFlags);
+            numa_bitmask_free(nodes);
+            return result == 0;
         }
 
         case config::NumaPolicy::StrictLocal:
