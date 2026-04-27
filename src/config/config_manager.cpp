@@ -19,14 +19,11 @@ ConfigManager::ConfigManager(ImmutableConfig imm, MutableConfig mut, memory::Epo
 }
 
 ConfigManager::~ConfigManager() noexcept {
-    auto* ptr = current_mutable_config_.load(std::memory_order_acquire);
-
+    auto* ptr = current_mutable_config_.exchange(nullptr, std::memory_order_acq_rel);
     if (ptr) {
-        current_mutable_config_.store(nullptr, std::memory_order_release);
-        delete ptr;
+        epoch_mgr_.retire(ptr);
     }
 
-    epoch_mgr_.force_reclaim_all();
 }
 
 auto ConfigManager::get_mutable() const noexcept -> ConfigManager::ReadGuard {
