@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <optional>
 #include <string_view>
+#include <utility>
 
 namespace stratadb::memtable {
 
@@ -53,7 +54,7 @@ class SkipListMemTable {
     void scan(Visitor&& visitor) const {
         const SkipListNode* node = head_->next_nodes()[0].load(std::memory_order_acquire);
         while (node != nullptr) {
-            visitor(EntryView{
+            std::forward<Visitor>(visitor)(EntryView{
                 .key = node->user_key(),
                 .value = node->value(),
                 .sequence = node->sequence_number(),

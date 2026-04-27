@@ -33,8 +33,8 @@ template <std::size_t BlockSize>
 class WalStaging {
   public:
     WalStaging(memory::EpochManager& epoch_manager, memory::Arena& staging_arena) noexcept
-        : epoch_manager_(epoch_manager)
-        , staging_arena_(staging_arena) {}
+        : epoch_manager_(&epoch_manager)
+        , staging_arena_(&staging_arena) {}
 
     // Hot Path
     //  Called by users thread inside db->put()/db->delete() to stage the record for later flush to disk.
@@ -49,11 +49,12 @@ class WalStaging {
     auto harvest_ready_blocks() noexcept -> void;
 
   private:
-    memory::EpochManager& epoch_manager_;
-    memory::Arena& staging_arena_;
+    memory::EpochManager* epoch_manager_;
+    memory::Arena* staging_arena_;
     static thread_local WalBlock<BlockSize>* tls_current_block_;
     std::mutex handoff_mutex_; // Protects the handoff of blocks from staging to harvesting
-    std::vector<WalBlock<BlockSize>*> ready_blocks_; // Blocks that are ready to be flushed to disk, protected by handoff_mutex_
+    std::vector<WalBlock<BlockSize>*>
+        ready_blocks_; // Blocks that are ready to be flushed to disk, protected by handoff_mutex_
 };
 
 } // namespace stratadb::wal

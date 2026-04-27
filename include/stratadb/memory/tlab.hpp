@@ -50,8 +50,10 @@ class TLAB {
                 if (remaining >= size) [[likely]] {
                     const auto new_current = aligned_ptr + size;
 
+                    // NOLINTBEGIN(performance-no-int-to-ptr)
                     current_block_ = reinterpret_cast<std::byte*>(new_current);
                     return reinterpret_cast<void*>(aligned_ptr);
+                    // NOLINTEND(performance-no-int-to-ptr)
                 }
             }
 

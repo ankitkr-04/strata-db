@@ -1,6 +1,5 @@
 #pragma once
 
-#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cassert>
@@ -8,10 +7,8 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
-#include <new>
 #include <span>
 #include <string_view>
-#include <type_traits>
 
 namespace stratadb::memtable {
 
@@ -25,9 +22,9 @@ struct SkipListNode {
     static constexpr std::uint64_t MAX_SEQUENCE = std::numeric_limits<std::uint64_t>::max() >> TYPE_BITS;
     static constexpr std::size_t REQUIRED_ALIGNMENT = alignof(std::atomic<SkipListNode*>);
 
-    std::uint32_t key_len_;
-    std::uint32_t val_len_;
-    std::uint8_t height_;
+    std::uint32_t key_len_{};
+    std::uint32_t val_len_{};
+    std::uint8_t height_{};
     std::array<unsigned char, PREFIX_BYTES> prefix_{};
 
     [[nodiscard]] static constexpr auto header_size() noexcept -> std::size_t {

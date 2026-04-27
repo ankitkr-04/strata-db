@@ -6,7 +6,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
-#include <new>
 #include <span>
 
 namespace stratadb::memory {
