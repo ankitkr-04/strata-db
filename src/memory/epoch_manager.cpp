@@ -11,8 +11,10 @@ namespace stratadb::memory {
 namespace {
 // Support up to 64 StratDB instances in the same process (tuning parameter)
 constexpr std::size_t MAX_DB_INSTANCES = 64;
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 std::atomic<std::size_t> global_instance_counter{0};
 
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 thread_local std::array<std::size_t, MAX_DB_INSTANCES> tl_epoch_slots = [] {
     std::array<std::size_t, MAX_DB_INSTANCES> slots{};
     slots.fill(std::numeric_limits<std::size_t>::max());
@@ -175,7 +177,8 @@ void EpochManager::retire_node(void* ptr, void (*deleter)(void*)) noexcept {
 }
 
 void EpochManager::reclaim() noexcept {
-    assert(thread_index_ != INVALID_THREAD);
+    const std::size_t slot = my_thread_index();
+    assert(slot != INVALID_THREAD);
 
     std::uint64_t min_epoch = global_epoch_.load(std::memory_order_acquire);
 
@@ -184,8 +187,8 @@ void EpochManager::reclaim() noexcept {
 
         while (active_bits != 0) {
             const auto bit_index = static_cast<std::size_t>(std::countr_zero(active_bits));
-            const std::size_t slot = (word_index * 64) + bit_index;
-            const std::uint64_t e = thread_states_[slot].state.load(std::memory_order_acquire);
+            const std::size_t active_slot = (word_index * 64) + bit_index;
+            const std::uint64_t e = thread_states_[active_slot].state.load(std::memory_order_acquire);
 
             if (e != INACTIVE_EPOCH) {
                 min_epoch = std::min(min_epoch, e);
@@ -195,33 +198,50 @@ void EpochManager::reclaim() noexcept {
         }
     }
 
-    auto& retire_list = thread_states_[thread_index_].retire_list_;
+    auto& state = thread_states_[slot];
 
-    // ---- manual compaction (replaces erase_if) ----
-    std::size_t write = 0;
-
-    for (std::size_t read = 0; read < retire_list.size(); ++read) {
-        auto& node = retire_list[read];
-
-        if (node.retire_epoch < min_epoch) {
-            node.deleter(node.ptr); // reclaim
+    // --- COMPACT SLAB (Outer Loop 1) ---
+    std::uint32_t write_idx = 0;
+    for (std::uint32_t i = 0; i < state.slab_count; ++i) {
+        if (state.slab[i].retire_epoch < min_epoch) {
+            state.slab[i].deleter(state.slab[i].ptr);
         } else {
-            if (write != read) {
-                retire_list[write] = node;
-            }
-            ++write;
+            state.slab[write_idx] = state.slab[i];
+            ++write_idx;
         }
     }
+    state.slab_count = write_idx; //Outside the loop
 
-    retire_list.resize(write);
+    
+    if (state.overflow_count > 0) {
+        write_idx = 0;
+        for (std::uint32_t i = 0; i < state.overflow_count; ++i) {
+            if (state.overflow[i].retire_epoch < min_epoch) {
+                state.overflow[i].deleter(state.overflow[i].ptr);
+            } else {
+                state.overflow[write_idx++] = state.overflow[i];
+            }
+        }
+        state.overflow_count = write_idx; // Outside the loop
+    }
 }
-
 void EpochManager::force_reclaim_all() noexcept {
     for (ThreadState& state : thread_states_) {
-        for (RetireNode& node : state.retire_list_) {
-            node.deleter(node.ptr);
+        for (std::uint32_t i = 0; i < state.slab_count; ++i) {
+            state.slab[i].deleter(state.slab[i].ptr);
         }
-        state.retire_list_.clear();
+        state.slab_count = 0;
+
+        for (std::uint32_t i = 0; i < state.overflow_count; ++i) {
+            state.overflow[i].deleter(state.overflow[i].ptr);
+        }
+        state.overflow_count = 0;
+
+        if (state.overflow) {
+            delete[] state.overflow;
+            state.overflow = nullptr;
+            state.overflow_capacity = 0;
+        }
     }
 }
 
