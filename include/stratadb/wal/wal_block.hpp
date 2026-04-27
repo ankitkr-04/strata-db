@@ -60,8 +60,9 @@ struct alignas(BlockSize) WalBlock {
     struct alignas(utils::CACHE_LINE_SIZE) VectorMetadata {
         std::uint8_t opcodes[MAX_RECORDS];      // Insert/Delete/Commit flags
         std::uint16_t key_lengths[MAX_RECORDS]; // Length of keys in payload
-        std::uint8_t _pad[METADATA_BYTES
-                          - 96]; // Pad to fill the metadata block, ensuring the payload starts on a new cache line.
+        std::uint8_t _pad[METADATA_BYTES - (sizeof(std::uint8_t) * MAX_RECORDS)
+                          - (sizeof(std::uint16_t) * MAX_RECORDS)]; // Pad to fill the metadata block, ensuring the
+                                                                    // payload starts on a new cache line.
     } metadata;
     static_assert(sizeof(VectorMetadata) == METADATA_BYTES, "VectorMetadata size mismatch.");
 
