@@ -3,7 +3,8 @@
   "cmake.buildDirectory": "${workspaceFolder}/build",
   "cmake.configureSettings": {
     "CMAKE_C_COMPILER": "/usr/bin/clang",
-    "CMAKE_CXX_COMPILER": "/usr/bin/clang++"
+    "CMAKE_CXX_COMPILER": "/usr/bin/clang++",
+    "STRATADB_BUILD_BENCHMARKS": "ON"
   },
   "clangd.arguments": [
     "--background-index",
