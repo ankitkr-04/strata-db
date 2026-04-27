@@ -93,7 +93,7 @@ auto WalStaging<BlockSize>::stage_write(std::uint64_t sequence_id,
 
     // Memory Copy
     auto* payload_base = thread_state.current_block->payload.data;
-    auto current_offset = thread_state.current_block->header.payload_bytes_written;
+    std::size_t current_offset = thread_state.current_block->header.payload_bytes_written;
     auto current_record = thread_state.current_block->header.num_records;
 
     // Copy key
@@ -105,7 +105,7 @@ auto WalStaging<BlockSize>::stage_write(std::uint64_t sequence_id,
     current_offset += value.size_bytes();
 
     // update header
-    thread_state.current_block->header.payload_bytes_written = current_offset;
+    thread_state.current_block->header.payload_bytes_written = static_cast<uint32_t>(current_offset);
     thread_state.current_block->header.sequence_id = sequence_id;
     thread_state.current_block->metadata.key_lengths[current_record] = static_cast<std::uint16_t>(key.size_bytes());
     thread_state.current_block->header.num_records++;
