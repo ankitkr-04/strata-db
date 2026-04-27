@@ -4,8 +4,8 @@
 #include "stratadb/memory/epoch_manager.hpp"
 #include "stratadb/memory/tlab.hpp"
 
+#include <cstdio>
 #include <cstring>
-#include <memory>
 #include <mutex>
 #include <optional>
 #include <vector>
@@ -33,9 +33,9 @@ thread_local std::array<ThreadState<BlockSize>, MAX_DB_INSTANCES> tl_states;
 template <std::size_t BlockSize>
 WalStaging<BlockSize>::WalStaging(memory::EpochManager& epoch_manager, memory::Arena& staging_arena) noexcept
     : epoch_manager_(&epoch_manager)
-    , staging_arena_(&staging_arena) {
+    , staging_arena_(&staging_arena)
+    , instance_id_(staging_instance_counter<BlockSize>.fetch_add(1, std::memory_order_relaxed)) {
 
-    instance_id_ = staging_instance_counter<BlockSize>.fetch_add(1, std::memory_order_relaxed);
     if (instance_id_ >= MAX_DB_INSTANCES) {
         std::fputs("StrataDB: Exceeded max WAL instances\n", stderr);
         std::terminate();
