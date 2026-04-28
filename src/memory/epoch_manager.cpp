@@ -64,6 +64,7 @@ auto EpochManager::register_thread() noexcept -> std::expected<void, EpochError>
                 const std::size_t slot = (word_index * 64) + bit_index;
                 thread_states_[slot].state.store(INACTIVE_EPOCH, std::memory_order_release);
                 thread_index_ = slot;
+                tl_epoch_slots[instance_id_] = slot;
                 return {};
             }
         }
@@ -87,6 +88,7 @@ void EpochManager::unregister_thread() {
     const std::uint64_t bit = std::uint64_t{1} << bit_index;
     active_thread_masks_[word_index].bits.fetch_and(~bit, std::memory_order_acq_rel);
 
+    tl_epoch_slots[instance_id_] = INVALID_THREAD;
     thread_index_ = INVALID_THREAD;
 }
 
@@ -136,7 +138,7 @@ void EpochManager::retire_node(void* ptr, void (*deleter)(void*)) noexcept {
 
     } else {
         // Slow path: Backpressure via overflow list
-        if (state.overflow_count == ThreadState::SLAB_CAPACITY) {
+        if (state.overflow_count >= state.overflow_capacity) {
             std::uint32_t new_capacity = state.overflow_capacity == 0 ? 256 : state.overflow_capacity * 2;
             auto* new_overflow = new (std::nothrow) RetireNode[new_capacity];
             if (!new_overflow) {

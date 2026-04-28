@@ -4,11 +4,11 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <string>
-#include <string_view>
 #include <thread>
 #include <vector>
 
