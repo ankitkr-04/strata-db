@@ -44,7 +44,8 @@ class WalStaging {
     // Cold Path
     //  Called by internal WAL Orchestrator thread to retrieve the staged record for flushing to disk. This is a
     //  destructive read and will clear the staging area after reading.
-    auto harvest_ready_blocks() noexcept -> void;
+    // called by wal manager's flusher thread to get the staded records for flushing the disk
+    auto harvest_ready_blocks() noexcept -> std::vector<WalBlock<BlockSize>*>;
 
   private:
     memory::EpochManager* epoch_manager_;
