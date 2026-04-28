@@ -24,6 +24,9 @@ struct WalConfig {
     std::size_t wal_block_size_bytes{DEFAULT_WAL_BLOCK_SIZE};
     std::size_t max_staging_bytes{DEFAULT_MAX_STAGING_BYTES};
 
+    // 0 means Auto-Detect via OS Probing. > 0 forces a specific queue depth.
+    std::size_t target_queue_depth{0};
+
     // Used by AdaptiveBuffered to detect SSD GC stalls
     std::chrono::microseconds target_flush_latency{50us};
 };
