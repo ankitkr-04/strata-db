@@ -95,6 +95,7 @@ add_library(stratadb STATIC
   src/memtable/skiplist_memtable.cpp
   src/wal/wal_staging.cpp
   src/utils/hardware.cpp
+  src/io/posix_io_engine.cpp
 )
 
 target_include_directories(stratadb PUBLIC include PRIVATE src)
