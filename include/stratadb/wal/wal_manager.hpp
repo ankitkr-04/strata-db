@@ -21,7 +21,7 @@ using StagingVariant = std::variant<WalStaging<SectorSize::LegacyHDD>,
 
                                     >;
 
-template <io::IsIOEngine Engine>
+template <io::IsIoEngine Engine>
 class WalManager {
   public:
     WalManager(const config::WalConfig& config,
