@@ -2,6 +2,9 @@
 
 #include "stratadb/wal/wal_concept.hpp"
 
+#define XXH_INLINE_ALL
+#include "xxhash.h"
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -16,10 +19,13 @@ struct alignas(4096) GammaBlock {
 
     struct Header {
         uint64_t sequence_number{0};
-        uint32_t block_crc32{0};
+        XXH128_hash_t block_hash{.low64 = 0, .high64 = 0}; // 16 bytes: xxHash3 128-bit
         uint16_t record_count{0};
         uint16_t flags{0};
+        uint32_t _padding{0}; // Padding to make Header size a multiple of 8 bytes (total 32 bytes)
     } header;
+
+    static_assert(sizeof(Header) == 32, "Header size must be exactly 32 bytes for proper alignment.");
 
     alignas(8) std::array<std::byte, BlockSize - sizeof(Header)> arena;
 
@@ -64,18 +70,21 @@ struct alignas(4096) GammaBlock {
 
         return true;
     }
-
-    std::span<const std::byte> finalize(uint64_t seq_num) {
+    // called by the producer thread when the block is full or needs to be sealed for I/O handoff
+    [[nodiscard]] auto finalize(uint64_t seq_num) -> std::span<const std::byte> {
         header.sequence_number = seq_num;
-        // Note: CRC32 is intentionally left to 0 here.
-        // The *Flusher Thread* computes it over this returned span before O_DIRECT.
+        // Zero the hash field before computing the hash to avoid circular dependency
+        header.block_hash = {0, 0};
 
         // We return the total written size (Header + active arena)
         const size_t total_written = sizeof(Header) + current_offset;
 
+        // compute hash, use avx2/avx512 if available, otherwise fallback to scalar
+        header.block_hash = XXH3_128bits(this, current_offset);
+
         // Safely cast `this` to byte pointer for the I/O engine
         const auto* block_start = reinterpret_cast<const std::byte*>(this);
-        return std::span<const std::byte>(block_start, total_written);
+        return {block_start, total_written};
     }
 };
 
