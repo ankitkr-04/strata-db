@@ -1,56 +1,58 @@
 #pragma once
 
-#include "stratadb/config/wal_config.hpp"
-#include "stratadb/io/io_concept.hpp"
-#include "stratadb/memory/arena.hpp"
-#include "stratadb/memory/epoch_manager.hpp"
-#include "stratadb/wal/wal_staging.hpp"
+#include "stratadb/wal/delta_block.hpp"
+#include "stratadb/wal/gamma_block.hpp"
+#include "stratadb/wal/wal_pipeline.hpp"
 
-#include <cstdint>
 #include <span>
-#include <stop_token>
-#include <thread>
+#include <string>
+#include <utility>
 #include <variant>
-
+#include <vector>
 namespace stratadb::wal {
 
-using StagingVariant = std::variant<WalStaging<SectorSize::LegacyHDD>,
-                                    WalStaging<SectorSize::StandardNVMe>,
-                                    WalStaging<SectorSize::AdvancedFormat>,
-                                    WalStaging<SectorSize::EnterpriseNVMe>
+// The 3 Hardware Realities on Modern Linux:
+// 1. SSD with standard 4KiB LBA
+using Ssd4kPipeline = WalPipeline<GammaBlock<4096>>;
+// 2. SSD with Enterprise 16KiB LBA
+using Ssd16kPipeline = WalPipeline<GammaBlock<16384>>;
+// 3. HDD strictly using 4096-byte physical sectors (Advanced Format 4Kn)
+using Hdd4kPipeline = WalPipeline<DeltaBlock<4096>>;
 
-                                    >;
+using StagingVariant = std::variant<Ssd4kPipeline, Ssd16kPipeline, Hdd4kPipeline>;
 
-template <io::IsIoEngine Engine>
+// Mock WriteBatch for compilation (Replace with actual WriteBatch later)
+using WriteBatch = std::vector<std::pair<std::string, std::string>>;
+
 class WalManager {
   public:
-    WalManager(const config::WalConfig& config,
-               memory::EpochManager& epoch_manager,
-               memory::Arena& staging_arena,
-               Engine io_engine,
-               int wal_fd);
-
-    [[nodiscard]] auto stage_write(std::uint64_t sequence_id,
-                                   std::span<const std::byte> key,
-                                   std::span<const std::byte> value) noexcept -> bool {
-
-        return std::visit([&](auto& staging) -> auto { return staging.stage_write(sequence_id, key, value); },
-                          staging_);
+    // The variant initializes exactly one pipeline based on sysfs detection.
+    WalManager(bool is_rotational, std::size_t hw_sector_size) {
+        if (is_rotational) {
+            pipeline_ = Hdd4kPipeline{};
+        } else if (hw_sector_size == 16384) {
+            pipeline_ = Ssd16kPipeline{};
+        } else {
+            pipeline_ = Ssd4kPipeline{};
+        }
     }
 
-    void flush_pipeline() noexcept;
+    void write_batch(const WriteBatch& batch) {
+       
+        std::visit(
+            [&batch](auto& active_pipeline) -> auto {
+                for (const auto& [k, v] : batch) {
+                    std::span<const std::byte> key_span{reinterpret_cast<const std::byte*>(k.data()), k.size()};
+                    std::span<const std::byte> val_span{reinterpret_cast<const std::byte*>(v.data()), v.size()};
+
+                    active_pipeline.stage_write(key_span, val_span);
+                }
+            },
+            pipeline_);
+    }
 
   private:
-    void flusher_loop(std::stop_token stop_token) noexcept;
-
-  private:
-    StagingVariant staging_;
-    config::WalConfig config_;
-
-    Engine io_engine_;
-    int wal_fd_{-1};
-
-    std::jthread flusher_thread_;
+    StagingVariant pipeline_;
 };
 
 } // namespace stratadb::wal
