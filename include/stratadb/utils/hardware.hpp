@@ -33,4 +33,8 @@ inline constexpr std::size_t MAX_DB_INSTANCES = 64;
 // Probes the hardware for available logical cores (respecting OS constraints).
 [[nodiscard]] auto logical_core_count() noexcept -> std::uint32_t;
 
+// Probes the OS for installed physical memory in bytes.
+// Returns 0 if the platform does not expose a reliable value.
+[[nodiscard]] auto total_physical_memory_bytes() noexcept -> std::size_t;
+
 } // namespace stratadb::utils

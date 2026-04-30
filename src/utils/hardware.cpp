@@ -5,6 +5,7 @@
 #include <sys/ioctl.h>
 #include <unistd.h>
 #elif defined(__APPLE__)
+#include <sys/sysctl.h>
 #include <sys/disk.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
@@ -55,6 +56,33 @@ auto logical_core_count() noexcept -> std::uint32_t {
 #else
     const unsigned hw = std::thread::hardware_concurrency();
     return (hw > 0) ? static_cast<std::uint32_t>(hw) : 1U;
+#endif
+}
+
+auto total_physical_memory_bytes() noexcept -> std::size_t {
+#if defined(__linux__)
+    const long page_size = ::sysconf(_SC_PAGESIZE);
+    const long page_count = ::sysconf(_SC_PHYS_PAGES);
+    if (page_size > 0 && page_count > 0) {
+        return static_cast<std::size_t>(page_size) * static_cast<std::size_t>(page_count);
+    }
+    return 0UZ;
+#elif defined(__APPLE__)
+    std::uint64_t mem_size = 0;
+    std::size_t len = sizeof(mem_size);
+    if (::sysctlbyname("hw.memsize", &mem_size, &len, nullptr, 0) == 0 && len == sizeof(mem_size)) {
+        return static_cast<std::size_t>(mem_size);
+    }
+    return 0UZ;
+#elif defined(_WIN32)
+    MEMORYSTATUSEX status{};
+    status.dwLength = sizeof(status);
+    if (GlobalMemoryStatusEx(&status) != 0) {
+        return static_cast<std::size_t>(status.ullTotalPhys);
+    }
+    return 0UZ;
+#else
+    return 0UZ;
 #endif
 }
 
