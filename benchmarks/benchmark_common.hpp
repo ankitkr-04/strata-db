@@ -1,13 +1,17 @@
 #pragma once
 
 #include "stratadb/memtable/skiplist_node.hpp"
+#include "stratadb/utils/hardware.hpp"
 
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
+#include <limits>
 #include <string>
 #include <thread>
 #include <vector>
@@ -40,12 +44,21 @@ inline constexpr std::array<NodeProfile, 4> kNodeProfiles{{
     return std::string(size, seed);
 }
 
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
 [[nodiscard]] inline auto make_ordered_key(std::uint64_t value, std::size_t width) -> std::string {
     std::string key(width, '0');
-    auto digits = key.data();
-    std::snprintf(digits, width + 1, "%0*llu", static_cast<int>(width), static_cast<unsigned long long>(value));
-    if (key.size() > width) {
-        key.resize(width);
+    std::array<char, 32> buffer{};
+    const auto [ptr, ec] = std::to_chars(buffer.data(), buffer.data() + buffer.size(), value);
+    if (ec != std::errc{}) {
+        return key;
+    }
+
+    const auto digits = static_cast<std::size_t>(ptr - buffer.data());
+    if (digits >= width) {
+        std::copy(buffer.data() + static_cast<std::ptrdiff_t>(digits - width), ptr, key.begin());
+    } else {
+        const std::size_t pad = width - digits;
+        std::copy(buffer.data(), ptr, key.begin() + static_cast<std::ptrdiff_t>(pad));
     }
     return key;
 }
@@ -71,6 +84,39 @@ struct LatencySummary {
         .p50_ns = percentile(0.50),
         .p99_ns = percentile(0.99),
     };
+}
+
+[[nodiscard]] inline auto benchmark_thread_cap() noexcept -> int {
+    constexpr int kDefaultThreadCap = 16;
+
+    int cap = kDefaultThreadCap;
+
+    if (const char* raw_limit = std::getenv("STRATADB_BENCH_MAX_THREADS")) {
+        char* end = nullptr;
+        const long parsed = std::strtol(raw_limit, &end, 10);
+        if (end != raw_limit && *end == '\0' && parsed > 0 && parsed <= std::numeric_limits<int>::max()) {
+            cap = static_cast<int>(parsed);
+        }
+    }
+
+    const int logical_cores = static_cast<int>(utils::logical_core_count());
+    if (logical_cores > 0) {
+        cap = std::min(cap, logical_cores);
+    }
+
+    return std::max(1, cap);
+}
+
+template <typename Fn>
+inline void for_each_supported_thread_count(Fn fn) {
+    static constexpr std::array<int, 6> kCandidates{1, 2, 4, 8, 16, 32};
+    const int cap = benchmark_thread_cap();
+
+    for (const int candidate : kCandidates) {
+        if (candidate <= cap) {
+            fn(candidate);
+        }
+    }
 }
 
 class OneShotStartGate {

@@ -42,7 +42,6 @@
 #include <cstring>
 #include <limits>
 #include <memory>
-#include <numeric>
 #include <random>
 #include <string>
 #include <thread>
@@ -900,35 +899,32 @@ static void BM_MemTablePutScaling(benchmark::State& state) {
 // Registration Helpers
 // ═══════════════════════════════════════════════════════════════════
 
-// Threads used across multi-threaded benchmarks.
-static constexpr std::array<int, 6> kThreadCounts{1, 2, 4, 8, 16, 32};
-
 void register_put_args(benchmark::Benchmark* b) {
-    for (int t : kThreadCounts) {
+    for_each_supported_thread_count([&](int t) -> void {
         for (std::size_t p = 0; p < kKVProfiles.size(); ++p) {
             for (int d : {0, 1, 2}) { // Sequential, Uniform, Hotspot
                 b->Args({t, static_cast<long long>(p), d});
             }
         }
-    }
+    });
 }
 
 void register_get_args(benchmark::Benchmark* b) {
-    for (int t : kThreadCounts) {
+    for_each_supported_thread_count([&](int t) -> void {
         for (std::size_t p = 0; p < kKVProfiles.size(); ++p) {
             for (int hit : {0, 50, 100}) {
                 b->Args({t, static_cast<long long>(p), hit});
             }
         }
-    }
+    });
 }
 
 void register_remove_args(benchmark::Benchmark* b) {
-    for (int t : kThreadCounts) {
+    for_each_supported_thread_count([&](int t) -> void {
         for (std::size_t p = 0; p < kKVProfiles.size(); ++p) {
             b->Args({t, static_cast<long long>(p)});
         }
-    }
+    });
 }
 
 void register_scan_args(benchmark::Benchmark* b) {
@@ -942,6 +938,9 @@ void register_scan_args(benchmark::Benchmark* b) {
 
 void register_mixed_args(benchmark::Benchmark* b) {
     for (int t : {4, 8, 16}) {
+        if (t > benchmark_thread_cap()) {
+            continue;
+        }
         for (int rpct : {50, 80, 95}) {
             for (std::size_t p : {1u, 2u}) { // small, medium
                 b->Args({t, rpct, static_cast<long long>(p)});
@@ -951,10 +950,10 @@ void register_mixed_args(benchmark::Benchmark* b) {
 }
 
 void register_scaling_args(benchmark::Benchmark* b) {
-    for (int t : kThreadCounts) {
+    for_each_supported_thread_count([&](int t) -> void {
         // profile=1 (small), dist=1 (uniform random)
         b->Args({t, 1, 1});
-    }
+    });
 }
 
 } // namespace
