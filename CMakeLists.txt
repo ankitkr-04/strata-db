@@ -95,6 +95,7 @@ add_library(stratadb STATIC
   src/memtable/skiplist_memtable.cpp
   src/utils/hardware.cpp
   src/utils/os.cpp
+  src/memory/block_pool.cpp
 )
 
 target_include_directories(stratadb PUBLIC include PRIVATE src)

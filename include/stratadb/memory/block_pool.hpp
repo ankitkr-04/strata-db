@@ -16,6 +16,7 @@ class BlockPool {
     static constexpr size_t BLOCK_SIZE = 16_KiB; // 16KB blocks
     static constexpr size_t CAPACITY = 16384;    // 2^14 blocks -> 256MB total
     static constexpr size_t INDEX_MASK = CAPACITY - 1;
+    static constexpr size_t PAYLOAD_ARRAY_SIZE = 4_KiB;
 
     BlockPool();
     ~BlockPool();
