@@ -93,9 +93,7 @@ add_library(stratadb STATIC
   src/memory/tlab.cpp
   src/memtable/skiplist_node.cpp
   src/memtable/skiplist_memtable.cpp
-  src/wal/wal_staging.cpp
   src/utils/hardware.cpp
-  src/io/posix_io_engine.cpp
   src/utils/os.cpp
 )
 
@@ -155,7 +153,6 @@ if(STRATADB_BUILD_BENCHMARKS)
   set(BENCHMARK_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
   fetchcontent_makeavailable(benchmark)
 
-  # Macro to streamline benchmark creation
   macro(add_stratadb_benchmark name source_file)
     add_executable(${name} ${source_file})
     target_link_libraries(${name} PRIVATE
@@ -173,4 +170,5 @@ if(STRATADB_BUILD_BENCHMARKS)
   add_stratadb_benchmark(allocator_bench benchmarks/allocator_bench.cpp)
   add_stratadb_benchmark(tlab_bench benchmarks/tlab_bench.cpp)
   add_stratadb_benchmark(page_bench benchmarks/page_bench.cpp)
+  add_stratadb_benchmark(memtable_bench benchmarks/memtable_bench.cpp)
 endif()

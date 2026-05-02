@@ -38,7 +38,7 @@ class WalManager {
     }
 
     void write_batch(const WriteBatch& batch) {
-       
+
         std::visit(
             [&batch](auto& active_pipeline) -> auto {
                 for (const auto& [k, v] : batch) {
