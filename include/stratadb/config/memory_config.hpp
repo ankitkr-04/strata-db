@@ -11,10 +11,10 @@ using namespace stratadb::utils::bytes::literals;
 struct MemoryConfig {
 
     static constexpr std::size_t DEFAULT_TOTAL_BUDGET = 1_GiB;
-    static constexpr std::size_t DEFAULT_TLAB_SIZE = 2_MiB;
+    static constexpr std::size_t DEFAULT_TLAB_SIZE = 32_MiB;
     // Intentionally independent from ImmutableConfig::DEFAULT_BLOCK_SIZE_BYTES.
     // This controls allocator alignment, not SSTable block layout.
-    //0 signifies autodetect, will query system page size at initialization and align to that if possible.
+    // 0 signifies autodetect, will query system page size at initialization and align to that if possible.
     static constexpr std::size_t DEFAULT_BLOCK_ALIGNMENT = 0;
 
     PageStrategy page_strategy{PageStrategy::Huge2M_Opportunistic};
