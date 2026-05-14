@@ -250,7 +250,7 @@ void run_put(benchmark::State& state) {
     std::barrier<> go(nthreads + 1);
     std::barrier<> done(nthreads + 1);
 
-    std::vector<bool> w_failed(tc, false);
+    std::vector<char> w_failed(tc, 0);
     std::vector<std::vector<double>> w_lat(tc);
 
     std::vector<std::thread> workers;
@@ -280,7 +280,7 @@ void run_put(benchmark::State& state) {
                 auto* mt = g_mt.load(std::memory_order_acquire);
 
                 if (!local_arena || !mt) {
-                    w_failed[t] = true;
+                    w_failed[t] = 1;
                     done.arrive_and_wait();
                     continue;
                 }
@@ -289,7 +289,7 @@ void run_put(benchmark::State& state) {
 
                 w_lat[t].clear();
                 w_lat[t].reserve(kOpsPerThread / (kLatMask + 1) + 1);
-                w_failed[t] = false;
+                w_failed[t] = 0;
 
                 for (std::size_t op = 0; op < kOpsPerThread; ++op) {
                     const bool sample = (op & kLatMask) == 0;
@@ -302,7 +302,7 @@ void run_put(benchmark::State& state) {
                     }
 
                     if (r == memtable::PutResult::OutOfMemory) {
-                        w_failed[t] = true;
+                        w_failed[t] = 1;
                         break;
                     }
                     benchmark::DoNotOptimize(r);
@@ -507,7 +507,7 @@ void run_remove(benchmark::State& state) {
     std::barrier<> go(nthreads + 1);
     std::barrier<> done(nthreads + 1);
 
-    std::vector<bool> w_failed(tc, false);
+    std::vector<char> w_failed(tc, 0);
     std::vector<std::vector<double>> w_lat(tc);
 
     std::vector<std::thread> workers;
@@ -533,7 +533,7 @@ void run_remove(benchmark::State& state) {
 
                     w_lat[t].clear();
                     w_lat[t].reserve(kOpsPerThread / (kLatMask + 1) + 1);
-                    w_failed[t] = false;
+                    w_failed[t] = 0;
 
                     for (std::size_t op = 0; op < kOpsPerThread; ++op) {
                         const bool sample = (op & kLatMask) == 0;
@@ -546,7 +546,7 @@ void run_remove(benchmark::State& state) {
                         }
 
                         if (r == memtable::PutResult::OutOfMemory) {
-                            w_failed[t] = true;
+                            w_failed[t] = 1;
                             break;
                         }
                         benchmark::DoNotOptimize(r);

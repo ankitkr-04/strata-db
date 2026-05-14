@@ -44,6 +44,13 @@ target_compile_options(stratadb_warnings INTERFACE
   -Werror
 )
 
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  target_compile_options(stratadb_warnings INTERFACE
+    -Wno-interference-size
+  )
+endif()
+
+
 # Apply compiler profiles to the interface
 if(STRATADB_DISABLE_EXCEPTIONS)
   target_compile_options(stratadb_warnings INTERFACE -fno-exceptions)
