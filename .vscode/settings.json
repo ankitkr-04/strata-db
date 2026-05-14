@@ -13,6 +13,7 @@
     "--header-insertion=never",
     "--pch-storage=memory"
   ],
+  "C_Cpp.intelliSenseEngine": "disabled",
   "editor.formatOnSave": true,
   "[cpp]": {
     "editor.defaultFormatter": "llvm-vs-code-extensions.vscode-clangd"

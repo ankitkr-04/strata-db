@@ -896,6 +896,156 @@ static void BM_MemTablePutScaling(benchmark::State& state) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// BM_MemTablePutSteadyState
+//
+// Same as BM_MemTablePutScaling but with a pre-populated memtable.
+// Tests insertion throughput when the memtable already contains keys,
+// isolating CAS contention on an actively-used skiplist structure.
+//
+// Args: range(0) = threads
+// ═══════════════════════════════════════════════════════════════════
+
+void run_put_steady_state(benchmark::State& state) {
+    const int nthreads = static_cast<int>(state.range(0));
+    const auto& profile = kv_profile(static_cast<int>(state.range(1)));
+    const auto dist = static_cast<KeyDist>(static_cast<int>(state.range(2)));
+    const auto tc = static_cast<std::size_t>(nthreads);
+
+    state.SetLabel(std::string("put_steady/") + profile.name + "/" + dist_name(dist));
+
+    // Pre-generate keys outside timed region; each thread gets a unique seed
+    // so key distributions don't overlap between threads.
+    std::vector<std::vector<std::string>> t_keys(tc);
+    std::vector<std::string> t_vals(tc);
+    for (std::size_t t = 0; t < tc; ++t) {
+        t_keys[t] = pregenerate_keys(kOpsPerThread, profile.key_bytes, dist, t * 0x1234'5678'abcd'ef01ULL);
+        t_vals[t] = std::string(profile.value_bytes, static_cast<char>('A' + t % 26));
+    }
+
+    std::atomic<bool> stop{false};
+    std::atomic<memory::Arena*> g_arena{nullptr};
+    std::atomic<memtable::SkipListMemTable*> g_mt{nullptr};
+    std::barrier<> go(nthreads + 1);
+    std::barrier<> done(nthreads + 1);
+
+    std::vector<bool> w_failed(tc, false);
+    std::vector<std::vector<double>> w_lat(tc);
+
+    std::vector<std::thread> workers;
+    workers.reserve(tc);
+
+    for (int ti = 0; ti < nthreads; ++ti) {
+        workers.emplace_back([&, ti] {
+            const auto t = static_cast<std::size_t>(ti);
+            const std::vector<std::string>& keys = t_keys[t];
+            const std::string& val = t_vals[t];
+
+            while (true) {
+                go.arrive_and_wait();
+                if (stop.load(std::memory_order_acquire))
+                    break;
+
+                // Construct TLAB pointing at the fresh arena for this iteration.
+                memory::TLAB tlab(*g_arena.load(std::memory_order_acquire));
+                auto* mt = g_mt.load(std::memory_order_acquire);
+
+                w_lat[t].clear();
+                w_lat[t].reserve(kOpsPerThread / (kLatMask + 1) + 1);
+                w_failed[t] = false;
+
+                for (std::size_t op = 0; op < kOpsPerThread; ++op) {
+                    const bool sample = (op & kLatMask) == 0;
+                    const Clock::time_point t0 = sample ? Clock::now() : Clock::time_point{};
+
+                    auto r = mt->put(keys[op], val, tlab);
+
+                    if (sample) {
+                        w_lat[t].push_back(std::chrono::duration<double, std::nano>(Clock::now() - t0).count());
+                    }
+
+                    if (r == memtable::PutResult::OutOfMemory) {
+                        w_failed[t] = true;
+                        break;
+                    }
+                    benchmark::DoNotOptimize(r);
+                }
+
+                done.arrive_and_wait();
+            }
+        });
+    }
+
+    std::vector<double> all_lat;
+    std::size_t payload_bytes = 0;
+
+    for (auto _ : state) {
+        (void)_;
+        state.PauseTiming();
+
+        // Fresh fixture per iteration with headroom for population + benchmark ops.
+        const std::size_t populate_count = 100'000;
+        const std::size_t cap = node_budget(profile, populate_count + kOpsPerThread * tc)
+                                + tc * config::MemoryConfig::DEFAULT_TLAB_SIZE + (64ULL << 20);
+
+        auto fix = make_fixture(cap);
+        g_arena.store(fix.arena.get(), std::memory_order_release);
+        g_mt.store(fix.memtable.get(), std::memory_order_release);
+
+        // Pre-populate the memtable with 100k keys
+        {
+            memory::TLAB seed_tlab(*fix.arena);
+            const std::string seed_val(profile.value_bytes, 'P');
+            for (std::size_t i = 0; i < populate_count; ++i) {
+                const auto key = make_ordered_key(i, profile.key_bytes);
+                if (fix.memtable->put(key, seed_val, seed_tlab) != memtable::PutResult::Ok) {
+                    state.SkipWithError("Steady-state population failed — increase headroom");
+                    goto teardown;
+                }
+            }
+        }
+
+        state.ResumeTiming();
+        go.arrive_and_wait();   // release workers
+        done.arrive_and_wait(); // wait for workers
+        state.PauseTiming();
+
+        for (std::size_t t = 0; t < tc; ++t) {
+            if (w_failed[t]) {
+                state.SkipWithError("Arena OOM during put benchmark — increase headroom");
+                goto teardown;
+            }
+        }
+
+        payload_bytes += kOpsPerThread * tc * (profile.key_bytes + profile.value_bytes);
+        for (std::size_t t = 0; t < tc; ++t) {
+            all_lat.insert(all_lat.end(), w_lat[t].begin(), w_lat[t].end());
+        }
+
+        state.ResumeTiming();
+    }
+
+teardown:
+    stop.store(true, std::memory_order_release);
+    go.arrive_and_wait();
+    for (auto& w : workers)
+        w.join();
+
+    const auto total_ops = static_cast<std::int64_t>(state.iterations()) * static_cast<std::int64_t>(nthreads)
+                           * static_cast<std::int64_t>(kOpsPerThread);
+
+    const auto lat = summarize_ext(std::move(all_lat));
+    state.SetItemsProcessed(total_ops);
+    state.SetBytesProcessed(static_cast<std::int64_t>(payload_bytes));
+    state.counters["p50_ns"] = lat.p50_ns;
+    state.counters["p95_ns"] = lat.p95_ns;
+    state.counters["p99_ns"] = lat.p99_ns;
+}
+
+static void BM_MemTablePutSteadyState(benchmark::State& state) {
+    run_put_steady_state(state);
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // Registration Helpers
 // ═══════════════════════════════════════════════════════════════════
 
@@ -977,3 +1127,5 @@ BENCHMARK(stratadb::bench::BM_MemTableMixedRW)
     ->MeasureProcessCPUTime(); // combined user+kernel time for mixed workloads
 
 BENCHMARK(stratadb::bench::BM_MemTablePutScaling)->Apply(stratadb::bench::register_scaling_args)->UseRealTime();
+
+BENCHMARK(stratadb::bench::BM_MemTablePutSteadyState)->Apply(stratadb::bench::register_scaling_args)->UseRealTime();
