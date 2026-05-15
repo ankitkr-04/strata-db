@@ -1,27 +1,27 @@
+// benchmarks/allocator_bench.cpp
+//
+// StrataDB Allocator Microbenchmarks
+// Measures pure throughput of raw memory allocation + SkipListNode initialization.
+
 #include "benchmark_common.hpp"
 #include "stratadb/config/memory_config.hpp"
 #include "stratadb/memory/arena.hpp"
 #include "stratadb/memory/tlab.hpp"
 
-#include <atomic>
 #include <barrier>
 #include <benchmark/benchmark.h>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <new>
-#include <optional>
 #include <thread>
 #include <vector>
 
 namespace stratadb::bench {
 namespace {
 
-using Clock = std::chrono::steady_clock;
 constexpr std::size_t kPerThreadTargetBytes = 4ULL * 1024ULL * 1024ULL;
 constexpr std::size_t kMinimumOpsPerThread = 4096;
-constexpr std::size_t kLatencySampleMask = 31;
 
 enum class AllocationMode : std::uint8_t {
     BaselineNew,
@@ -29,11 +29,18 @@ enum class AllocationMode : std::uint8_t {
     ArenaWithTLAB,
 };
 
-struct WorkerResult {
-    std::vector<void*> owned_allocations;
-    std::vector<double> latency_samples_ns;
-    bool allocation_failed{false};
+// Padded and aligned to ensure strict cache-line isolation.
+// Written to ONLY outside the timed hot-path to guarantee zero false sharing.
+struct alignas(utils::CACHE_LINE_SIZE) WorkerStats {
+    std::vector<void*> allocs;
+    std::size_t ops_completed{0};
+    bool failed{false};
+
+    // Padding to ensure size is exactly a multiple of 64 bytes
+    char _pad[utils::CACHE_LINE_SIZE - (sizeof(std::vector<void*>) + sizeof(std::size_t) + sizeof(bool))] = {0};
 };
+
+static_assert(sizeof(WorkerStats) % utils::CACHE_LINE_SIZE == 0, "WorkerStats risks false sharing.");
 
 [[nodiscard]] auto ops_per_thread(const NodeProfile& profile) noexcept -> std::size_t {
     const std::size_t size = profile.allocation_size();
@@ -50,233 +57,237 @@ struct WorkerResult {
     cfg.block_alignment_bytes = config::MemoryConfig::DEFAULT_BLOCK_ALIGNMENT;
     return cfg;
 }
-
-void cleanup_owned_allocations(std::vector<WorkerResult>& results) noexcept {
-    for (auto& result : results) {
-        for (void* ptr : result.owned_allocations) {
-            ::operator delete(ptr, std::align_val_t(memtable::SkipListNode::REQUIRED_ALIGNMENT));
-        }
-        result.owned_allocations.clear();
-    }
-}
-
-// ---------------------------------------------------------------------------
-// run_benchmark
-//
-// The key invariant: std::thread objects are created exactly once, before the
-// Google Benchmark iteration loop.  Each iteration uses two std::barrier
-// phases:
-//
-//   start_barrier  — main signals workers to begin; workers begin.
-//   done_barrier   — workers signal completion; main collects stats.
-//
-// Only the code between start_barrier.arrive_and_wait() (main side) and
-// done_barrier.arrive_and_wait() (main side) is inside the timed window.
-// ---------------------------------------------------------------------------
-void run_benchmark(benchmark::State& state, AllocationMode mode, std::string_view mode_name) {
+template <AllocationMode Mode>
+void run_benchmark(benchmark::State& state) {
     const int thread_count = static_cast<int>(state.range(0));
     const auto& profile = profile_from_index(static_cast<int>(state.range(1)));
     const std::size_t per_thread_ops = ops_per_thread(profile);
     const std::size_t node_size = profile.allocation_size();
-
-    state.SetLabel(std::string(mode_name) + "/" + profile.name);
-
-    // Build payloads once; moving this outside the loop prevents make_payload()
-    // heap allocations from appearing in the allocator timing.
     const auto tc = static_cast<std::size_t>(thread_count);
+
     std::vector<std::string> thread_keys(tc);
     std::vector<std::string> thread_values(tc);
-    for (int t = 0; t < thread_count; ++t) {
-        const auto ti = static_cast<std::size_t>(t);
-        thread_keys[ti] = make_payload(profile.key_bytes, static_cast<char>('a' + (t % 26)));
-        thread_values[ti] = make_payload(profile.value_bytes, static_cast<char>('k' + (t % 10)));
+    for (std::size_t t = 0; t < tc; ++t) {
+        thread_keys[t] = make_payload(profile.key_bytes, static_cast<char>('a' + (t % 26)));
+        thread_values[t] = make_payload(profile.value_bytes, static_cast<char>('k' + (t % 10)));
     }
 
-    // Shared iteration state.  Written by main under PauseTiming, read by
-    // workers after start_barrier.
-    std::atomic<memory::Arena*> shared_arena{nullptr};
-    std::vector<WorkerResult> results(tc);
+    // Barrier provides happens-before guarantee; no atomic needed.
+    memory::Arena* shared_arena = nullptr;
+    std::vector<WorkerStats> w_stats(tc);
 
-    std::atomic<bool> stop_flag{false};
+    // Resize (not reserve) to allow branchless `allocs[op] = mem` assignment in the hot loop.
+    for (std::size_t t = 0; t < tc; ++t) {
+        w_stats[t].allocs.resize(per_thread_ops, nullptr);
+    }
 
-    // +1 so the main thread participates in both barriers.
-    std::barrier<> start_barrier(thread_count + 1);
+    bool stop_flag = false;
+
+    // The 3-Barrier Sandwich
+    std::barrier<> setup_barrier(thread_count + 1);
+    std::barrier<> go_barrier(thread_count + 1);
     std::barrier<> done_barrier(thread_count + 1);
 
-    // -----------------------------------------------------------------------
-    // Thread pool — created once, torn down after the benchmark loop.
-    // -----------------------------------------------------------------------
     std::vector<std::thread> workers;
     workers.reserve(tc);
 
-    for (int thread_index = 0; thread_index < thread_count; ++thread_index) {
-        workers.emplace_back([&, thread_index]() {
-            const std::size_t ti = static_cast<std::size_t>(thread_index);
-            const std::string& key = thread_keys[ti];
-            const std::string& val = thread_values[ti];
+    for (int ti = 0; ti < thread_count; ++ti) {
+        workers.emplace_back([&, t = static_cast<std::size_t>(ti)]() {
+            const std::string& key = thread_keys[t];
+            const std::string& val = thread_values[t];
 
             while (true) {
-                // Wait for main to set up the iteration and call ResumeTiming.
-                start_barrier.arrive_and_wait();
-                if (stop_flag.load(std::memory_order_acquire))
+                // Phase 1: Setup & Sync
+                setup_barrier.arrive_and_wait();
+
+                if (stop_flag) {
                     break;
-
-                auto& result = results[ti];
-                result.owned_allocations.clear();
-                result.owned_allocations.reserve(per_thread_ops);
-                result.latency_samples_ns.clear();
-                result.latency_samples_ns.reserve((per_thread_ops / (kLatencySampleMask + 1)) + 1);
-                result.allocation_failed = false;
-
-                // Construct TLAB per-iteration (trivially cheap — stores a ref).
-                memory::Arena* arena = shared_arena.load(std::memory_order_acquire);
-                std::optional<memory::TLAB> tlab;
-                if (mode == AllocationMode::ArenaWithTLAB) {
-                    tlab.emplace(*arena); // arena is non-null when mode requires it
                 }
 
-                for (std::size_t op = 0; op < per_thread_ops; ++op) {
-                    void* mem = nullptr;
-                    const bool sample = (op & kLatencySampleMask) == 0;
-                    const auto t_start = sample ? Clock::now() : Clock::time_point{};
-
-                    switch (mode) {
-                        case AllocationMode::BaselineNew:
-                            mem = ::operator new(node_size,
-                                                 std::align_val_t(memtable::SkipListNode::REQUIRED_ALIGNMENT),
-                                                 std::nothrow);
-                            break;
-                        case AllocationMode::ArenaOnly:
-                            mem = arena->allocate_aligned(node_size, memtable::SkipListNode::REQUIRED_ALIGNMENT);
-                            break;
-                        case AllocationMode::ArenaWithTLAB:
-                            mem = tlab->allocate(node_size, memtable::SkipListNode::REQUIRED_ALIGNMENT);
-                            break;
-                    }
-
-                    if (sample) {
-                        result.latency_samples_ns.push_back(
-                            std::chrono::duration<double, std::nano>(Clock::now() - t_start).count());
-                    }
-
-                    if (mem == nullptr) {
-                        result.allocation_failed = true;
-                        break; // flag will be checked by main thread
-                    }
-
-                    auto& node = memtable::SkipListNode::construct(mem,
-                                                                   key,
-                                                                   val,
-                                                                   static_cast<std::uint64_t>(op),
-                                                                   memtable::ValueType::TypeValue,
-                                                                   profile.height);
-                    benchmark::DoNotOptimize(node);
-
-                    if (mode == AllocationMode::BaselineNew) {
-                        result.owned_allocations.push_back(mem);
+                if constexpr (Mode != AllocationMode::BaselineNew) {
+                    if (!shared_arena) {
+                        w_stats[t].failed = true;
+                        go_barrier.arrive_and_wait();
+                        done_barrier.arrive_and_wait();
+                        continue;
                     }
                 }
 
-                // Signal main that this iteration's work is done.
+                // Registers for the hot loop (avoids cache line writes)
+                std::size_t local_ops = 0;
+                bool local_failed = false;
+                void** local_allocs = w_stats[t].allocs.data();
+
+                // Park precisely at the timed window edge
+                go_barrier.arrive_and_wait();
+
+                // Pure Hot Path
+                // Every mode does exactly the same pointer tracking and compiler fencing.
+                if constexpr (Mode == AllocationMode::ArenaWithTLAB) {
+                    memory::TLAB tlab(*shared_arena);
+                    for (std::size_t op = 0; op < per_thread_ops; ++op) {
+                        void* mem = tlab.allocate(node_size, memtable::SkipListNode::REQUIRED_ALIGNMENT);
+                        if (!mem) {
+                            local_failed = true;
+                            break;
+                        }
+
+                        local_allocs[op] = mem;
+                        benchmark::DoNotOptimize(mem);
+
+                        auto& node = memtable::SkipListNode::construct(mem,
+                                                                       key,
+                                                                       val,
+                                                                       static_cast<std::uint64_t>(op),
+                                                                       memtable::ValueType::TypeValue,
+                                                                       profile.height);
+                        benchmark::DoNotOptimize(node);
+                        benchmark::ClobberMemory();
+                        local_ops++;
+                    }
+                } else if constexpr (Mode == AllocationMode::ArenaOnly) {
+                    for (std::size_t op = 0; op < per_thread_ops; ++op) {
+                        void* mem =
+                            shared_arena->allocate_aligned(node_size, memtable::SkipListNode::REQUIRED_ALIGNMENT);
+                        if (!mem) {
+                            local_failed = true;
+                            break;
+                        }
+
+                        local_allocs[op] = mem;
+                        benchmark::DoNotOptimize(mem);
+
+                        auto& node = memtable::SkipListNode::construct(mem,
+                                                                       key,
+                                                                       val,
+                                                                       static_cast<std::uint64_t>(op),
+                                                                       memtable::ValueType::TypeValue,
+                                                                       profile.height);
+                        benchmark::DoNotOptimize(node);
+                        benchmark::ClobberMemory();
+                        local_ops++;
+                    }
+                } else if constexpr (Mode == AllocationMode::BaselineNew) {
+                    for (std::size_t op = 0; op < per_thread_ops; ++op) {
+                        void* mem = ::operator new(node_size,
+                                                   std::align_val_t(memtable::SkipListNode::REQUIRED_ALIGNMENT),
+                                                   std::nothrow);
+                        if (!mem) {
+                            local_failed = true;
+                            break;
+                        }
+
+                        local_allocs[op] = mem;
+                        benchmark::DoNotOptimize(mem);
+
+                        auto& node = memtable::SkipListNode::construct(mem,
+                                                                       key,
+                                                                       val,
+                                                                       static_cast<std::uint64_t>(op),
+                                                                       memtable::ValueType::TypeValue,
+                                                                       profile.height);
+                        benchmark::DoNotOptimize(node);
+                        benchmark::ClobberMemory();
+                        local_ops++;
+                    }
+                }
+
+                // Write back to memory exactly once
+                w_stats[t].ops_completed = local_ops;
+                w_stats[t].failed = local_failed;
+
                 done_barrier.arrive_and_wait();
             }
         });
     }
 
-    // -----------------------------------------------------------------------
-    // Benchmark iteration loop — threads are already alive.
-    // -----------------------------------------------------------------------
-    std::vector<double> all_samples;
     std::size_t total_bytes = 0;
+    std::size_t total_ops_completed = 0;
 
     for (auto _ : state) {
-        (void)_;
-
-        // ------ PAUSED: set up arena for this iteration --------------------
         state.PauseTiming();
 
         std::unique_ptr<memory::Arena> arena;
-        if (mode != AllocationMode::BaselineNew) {
-            const std::size_t total_ops = per_thread_ops * tc;
-            const std::size_t capacity = (total_ops * node_size) + (tc * config::MemoryConfig::DEFAULT_TLAB_SIZE);
-
+        if constexpr (Mode != AllocationMode::BaselineNew) {
+            // Tight calculated capacity + 16MB safety headroom
+            const std::size_t capacity =
+                (per_thread_ops * tc * node_size) + (tc * config::MemoryConfig::DEFAULT_TLAB_SIZE) + (16ULL << 20);
             auto exp = memory::Arena::create(make_arena_config(capacity));
             if (!exp.has_value()) {
                 state.SkipWithError("Arena::create failed during benchmark setup");
+                state.ResumeTiming();
                 break;
             }
             arena = std::make_unique<memory::Arena>(std::move(exp.value()));
         }
 
-        shared_arena.store(arena.get(), std::memory_order_release);
+        shared_arena = arena.get(); // Visible due to barrier
 
+        setup_barrier.arrive_and_wait();
+
+        // Timing covers thread dispatch + hot path + join barrier
         state.ResumeTiming();
-        // ------ TIMING: only allocation work happens here ------------------
-
-        start_barrier.arrive_and_wait(); // wake all workers
-        done_barrier.arrive_and_wait();  // wait for all workers to finish
-
-        // ------ PAUSED: collect stats, free baseline_new memory ------------
+        go_barrier.arrive_and_wait();
+        done_barrier.arrive_and_wait();
         state.PauseTiming();
 
-        for (const auto& result : results) {
-            if (result.allocation_failed) {
-                state.SkipWithError("Allocation failed inside worker thread");
-                goto teardown;
+        bool has_failure = false;
+        for (std::size_t t = 0; t < tc; ++t) {
+            if (w_stats[t].failed)
+                has_failure = true;
+            total_ops_completed += w_stats[t].ops_completed;
+            total_bytes += w_stats[t].ops_completed * node_size;
+
+            // Clean up baseline memory safely outside the timed window
+            if constexpr (Mode == AllocationMode::BaselineNew) {
+                for (std::size_t i = 0; i < w_stats[t].ops_completed; ++i) {
+                    ::operator delete(w_stats[t].allocs[i],
+                                      std::align_val_t(memtable::SkipListNode::REQUIRED_ALIGNMENT));
+                }
             }
         }
 
-        total_bytes += per_thread_ops * tc * node_size;
-
-        for (auto& result : results) {
-            all_samples.insert(all_samples.end(), result.latency_samples_ns.begin(), result.latency_samples_ns.end());
-        }
-
-        cleanup_owned_allocations(results);
-
         state.ResumeTiming();
+        if (has_failure) {
+            state.SkipWithError("Allocation failed inside worker thread");
+            break;
+        }
     }
 
-teardown:
-    // Signal threads to exit, then join.
-    stop_flag.store(true, std::memory_order_release);
-    start_barrier.arrive_and_wait();
-    for (auto& w : workers)
+    state.PauseTiming();
+    stop_flag = true;
+    setup_barrier.arrive_and_wait(); // Final release for clean exit
+
+    for (auto& w : workers) {
         w.join();
+    }
 
-    const auto total_ops = static_cast<std::int64_t>(state.iterations()) * static_cast<std::int64_t>(thread_count)
-                           * static_cast<std::int64_t>(per_thread_ops);
-
-    const auto latency = summarize_latencies(std::move(all_samples));
-
-    state.SetItemsProcessed(total_ops);
+    state.SetItemsProcessed(static_cast<std::int64_t>(total_ops_completed));
     state.SetBytesProcessed(static_cast<std::int64_t>(total_bytes));
-    state.counters["p50_ns"] = latency.p50_ns;
-    state.counters["p99_ns"] = latency.p99_ns;
     state.counters["alloc_size_bytes"] = static_cast<double>(profile.allocation_size());
 }
 
-static void BM_NewAllocate(benchmark::State& state) {
-    run_benchmark(state, AllocationMode::BaselineNew, "baseline_new");
+static void BM_BaselineAllocInit(benchmark::State& state) {
+    run_benchmark<AllocationMode::BaselineNew>(state);
 }
-static void BM_ArenaAllocate(benchmark::State& state) {
-    run_benchmark(state, AllocationMode::ArenaOnly, "arena_only");
+static void BM_ArenaAllocInit(benchmark::State& state) {
+    run_benchmark<AllocationMode::ArenaOnly>(state);
 }
-static void BM_TLABAllocate(benchmark::State& state) {
-    run_benchmark(state, AllocationMode::ArenaWithTLAB, "arena_tlab");
+static void BM_TLABAllocInit(benchmark::State& state) {
+    run_benchmark<AllocationMode::ArenaWithTLAB>(state);
 }
 
 void apply_allocator_args(benchmark::Benchmark* b) {
-    for (int threads : {1, 2, 4, 8, 16}) {
+    for_each_supported_thread_count([&](int threads) {
         for (std::size_t i = 0; i < kNodeProfiles.size(); ++i) {
             b->Args({threads, static_cast<long long>(i)});
         }
-    }
+    });
 }
 
 } // namespace
 } // namespace stratadb::bench
 
-BENCHMARK(stratadb::bench::BM_NewAllocate)->Apply(stratadb::bench::apply_allocator_args)->UseRealTime();
-BENCHMARK(stratadb::bench::BM_ArenaAllocate)->Apply(stratadb::bench::apply_allocator_args)->UseRealTime();
-BENCHMARK(stratadb::bench::BM_TLABAllocate)->Apply(stratadb::bench::apply_allocator_args)->UseRealTime();
+BENCHMARK(stratadb::bench::BM_BaselineAllocInit)->Apply(stratadb::bench::apply_allocator_args)->UseRealTime();
+BENCHMARK(stratadb::bench::BM_ArenaAllocInit)->Apply(stratadb::bench::apply_allocator_args)->UseRealTime();
+BENCHMARK(stratadb::bench::BM_TLABAllocInit)->Apply(stratadb::bench::apply_allocator_args)->UseRealTime();
