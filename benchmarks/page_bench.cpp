@@ -1,6 +1,9 @@
+// benchmarks/page_bench.cpp
+//
+// StrataDB Page Strategy & Prefaulting Benchmarks
+// Measures the OS-level paging impact (Standard 4K vs Huge 2M) and prefaulting costs.
+
 #include "benchmark_common.hpp"
-#include "stratadb/config/memory_config.hpp"
-#include "stratadb/config/memtable_config.hpp"
 #include "stratadb/memory/arena.hpp"
 #include "stratadb/memory/tlab.hpp"
 #include "stratadb/memtable/memtable_result.hpp"
@@ -17,27 +20,8 @@ namespace stratadb::bench {
 namespace {
 
 constexpr std::size_t kScanNodeCount = 524288;
-constexpr std::size_t kPrefaultArenaBytes = 256ULL * 1024ULL * 1024ULL; // Reduced from 1GB for stability
+constexpr std::size_t kPrefaultArenaBytes = 2048ULL * 1024ULL * 1024ULL; // 2 GB
 constexpr std::size_t kFirstWriteOps = 32768;
-
-[[nodiscard]] auto make_memory_config(config::PageStrategy page_strategy, bool prefault, std::size_t bytes) noexcept
-    -> config::MemoryConfig {
-    config::MemoryConfig cfg;
-    cfg.page_strategy = page_strategy;
-    cfg.prefault_on_init = prefault;
-    cfg.total_budget_bytes = bytes;
-    cfg.tlab_size_bytes = config::MemoryConfig::DEFAULT_TLAB_SIZE;
-    cfg.block_alignment_bytes = config::MemoryConfig::DEFAULT_BLOCK_ALIGNMENT;
-    return cfg;
-}
-
-[[nodiscard]] auto make_memtable_config(std::size_t budget_bytes) noexcept -> config::MemTableConfig {
-    config::MemTableConfig cfg;
-    cfg.max_size_bytes = budget_bytes;
-    cfg.flush_trigger_bytes = budget_bytes;
-    cfg.stall_trigger_bytes = budget_bytes;
-    return cfg;
-}
 
 struct ScanFixture {
     std::unique_ptr<memory::Arena> arena;
@@ -49,16 +33,20 @@ struct ScanFixture {
 [[nodiscard]] auto build_scan_fixture(config::PageStrategy page_strategy) -> std::expected<ScanFixture, std::string> {
     const auto& profile = profile_from_index(1);
     const std::size_t node_bytes = profile.allocation_size();
-    const std::size_t arena_bytes = (kScanNodeCount * node_bytes) + (64ULL * 1024ULL * 1024ULL);
 
-    auto arena_exp = memory::Arena::create(make_memory_config(page_strategy, false, arena_bytes));
+    // Leverage unified dynamic headroom
+    const std::size_t arena_bytes = (kScanNodeCount * node_bytes) + effective_headroom(64ULL * 1024ULL * 1024ULL);
+
+    // Call unified make_memory_cfg from benchmark_common.hpp
+    auto arena_exp = memory::Arena::create(make_memory_cfg(arena_bytes, page_strategy, false));
     if (!arena_exp.has_value()) {
         return std::unexpected("Arena::create failed (Environment may lack Huge Page support)");
     }
 
     ScanFixture fixture;
     fixture.arena = std::make_unique<memory::Arena>(std::move(arena_exp.value()));
-    fixture.memtable = std::make_unique<memtable::SkipListMemTable>(*fixture.arena, make_memtable_config(arena_bytes));
+    // Call unified make_memtable_cfg from benchmark_common.hpp
+    fixture.memtable = std::make_unique<memtable::SkipListMemTable>(*fixture.arena, make_memtable_cfg(arena_bytes));
 
     memory::TLAB tlab(*fixture.arena);
     const std::string value = make_payload(profile.value_bytes, 'v');
@@ -97,8 +85,12 @@ struct ScanFixture {
 static void BM_SkipListScanWarmed(benchmark::State& state) {
     const bool use_huge_pages = state.range(0) != 0;
 
-    // Strict requires OS support. If it fails, we accurately skip the benchmark.
-    const auto page_strategy = use_huge_pages ? config::PageStrategy::Huge2M_Strict : config::PageStrategy::Standard4K;
+    auto page_strategy = use_huge_pages ? config::PageStrategy::Huge2M_Strict : config::PageStrategy::Standard4K;
+
+    // Honor global page strategy override from env variables if provided
+    if (const auto& override_ps = global_bench_config().page_strategy) {
+        page_strategy = *override_ps;
+    }
 
     auto fixture_exp = build_scan_fixture(page_strategy);
     if (!fixture_exp.has_value()) {
@@ -128,10 +120,11 @@ static void BM_ArenaCreationPrefault(benchmark::State& state) {
     const bool prefault = state.range(0) != 0;
     state.SetLabel(prefault ? "prefault_true" : "prefault_false");
 
+    const std::size_t bytes = effective_headroom(kPrefaultArenaBytes);
+
     for (auto _ : state) {
         (void)_;
-        auto arena_exp =
-            memory::Arena::create(make_memory_config(config::PageStrategy::Standard4K, prefault, kPrefaultArenaBytes));
+        auto arena_exp = memory::Arena::create(make_memory_cfg(bytes, config::PageStrategy::Standard4K, prefault));
         if (!arena_exp.has_value()) {
             state.SkipWithError("Arena::create failed during prefault startup benchmark");
             return;
@@ -152,13 +145,16 @@ static void BM_InitialBatchWritePrefault(benchmark::State& state) {
     const std::string key = make_payload(profile.key_bytes, 'k');
     const std::string value = make_payload(profile.value_bytes, 'v');
 
+    // Leverage dynamic operations and capacity boundaries
+    const std::size_t ops = effective_ops(kFirstWriteOps);
+    const std::size_t bytes = effective_headroom(kPrefaultArenaBytes);
+
     state.SetLabel(prefault ? "prefault_true" : "prefault_false");
 
     for (auto _ : state) {
         (void)_;
         state.PauseTiming();
-        auto arena_exp =
-            memory::Arena::create(make_memory_config(config::PageStrategy::Standard4K, prefault, kPrefaultArenaBytes));
+        auto arena_exp = memory::Arena::create(make_memory_cfg(bytes, config::PageStrategy::Standard4K, prefault));
         if (!arena_exp.has_value()) {
             state.SkipWithError("Arena::create failed during initial-batch benchmark setup");
             return;
@@ -168,7 +164,7 @@ static void BM_InitialBatchWritePrefault(benchmark::State& state) {
         memory::TLAB tlab(arena);
         state.ResumeTiming();
 
-        for (std::size_t i = 0; i < kFirstWriteOps; ++i) {
+        for (std::size_t i = 0; i < ops; ++i) {
             void* mem = tlab.allocate(node_size, memtable::SkipListNode::REQUIRED_ALIGNMENT);
             if (mem == nullptr) {
                 state.SkipWithError("TLAB allocation failed during initial-batch benchmark");
@@ -189,9 +185,8 @@ static void BM_InitialBatchWritePrefault(benchmark::State& state) {
         state.ResumeTiming(); // API compliance
     }
 
-    state.SetItemsProcessed(static_cast<std::int64_t>(state.iterations()) * static_cast<std::int64_t>(kFirstWriteOps));
-    state.SetBytesProcessed(static_cast<std::int64_t>(state.iterations())
-                            * static_cast<std::int64_t>(kFirstWriteOps * node_size));
+    state.SetItemsProcessed(static_cast<std::int64_t>(state.iterations()) * static_cast<std::int64_t>(ops));
+    state.SetBytesProcessed(static_cast<std::int64_t>(state.iterations()) * static_cast<std::int64_t>(ops * node_size));
 }
 
 } // namespace
