@@ -76,10 +76,16 @@ struct alignas(utils::CACHE_LINE_SIZE) WorkerStats {
     std::vector<double> latencies;
 
     WorkerStats() {
-        latencies.reserve(128);
+        latencies.reserve(((kDefaultOpsPerThread + kLatencySampleMask) / (kLatencySampleMask + 1)));
     }
 };
 static_assert(sizeof(WorkerStats) % utils::CACHE_LINE_SIZE == 0, "WorkerStats risks false sharing.");
+
+[[nodiscard]] constexpr auto latency_sample_capacity(std::size_t iterations,
+                                                     std::size_t threads,
+                                                     std::size_t ops_per_thread) noexcept -> std::size_t {
+    return iterations * threads * ((ops_per_thread + kLatencySampleMask) / (kLatencySampleMask + 1));
+}
 
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
 [[nodiscard]] auto pregenerate_keys(std::size_t count, std::size_t key_bytes, KeyDist dist, std::uint64_t thread_seed)
@@ -206,6 +212,7 @@ void run_put(benchmark::State& state) {
     }
 
     std::vector<double> all_lat;
+    all_lat.reserve(latency_sample_capacity(static_cast<std::size_t>(state.max_iterations), tc, kOpsPerThread));
     std::size_t payload_bytes = 0;
 
     for (auto _ : state) {
@@ -343,6 +350,7 @@ void run_get(benchmark::State& state) {
     }
 
     std::vector<double> all_lat;
+    all_lat.reserve(latency_sample_capacity(static_cast<std::size_t>(state.max_iterations), tc, kOpsPerThread));
 
     for (auto _ : state) {
         state.PauseTiming();
@@ -445,6 +453,7 @@ void run_remove(benchmark::State& state) {
     }
 
     std::vector<double> all_lat;
+    all_lat.reserve(latency_sample_capacity(static_cast<std::size_t>(state.max_iterations), tc, kOpsPerThread));
 
     for (auto _ : state) {
         state.PauseTiming();
@@ -620,6 +629,7 @@ void run_mixed(benchmark::State& state) {
     }
 
     std::vector<double> all_lat;
+    all_lat.reserve(latency_sample_capacity(static_cast<std::size_t>(state.max_iterations), tc, kOpsPerThread));
     std::size_t sum_puts = 0, sum_gets = 0, sum_ooms = 0;
 
     for (auto _ : state) {

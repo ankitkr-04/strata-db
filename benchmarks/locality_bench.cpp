@@ -56,7 +56,7 @@ constexpr int kLocalityProfileIndex = 3;              // node_1024b
 
 void free_malloc_nodes(std::vector<memtable::SkipListNode*>& nodes) noexcept {
     for (auto* node : nodes) {
-        std::free(node);
+        ::operator delete(node, std::align_val_t(memtable::SkipListNode::REQUIRED_ALIGNMENT));
     }
     nodes.clear();
 }
@@ -83,7 +83,9 @@ void free_fillers(std::vector<void*>& fillers) noexcept {
     nodes.reserve(kNodeCount);
 
     for (std::size_t i = 0; i < kNodeCount; ++i) {
-        void* raw = std::malloc(node_size);
+        // void* raw = std::malloc(node_size);
+        void* raw =
+            ::operator new(node_size, std::align_val_t(memtable::SkipListNode::REQUIRED_ALIGNMENT), std::nothrow);
         if (!raw) {
             free_malloc_nodes(nodes);
             free_fillers(fillers);
@@ -128,8 +130,7 @@ struct ArenaFixture {
     const auto& profile = locality_profile();
     const std::size_t node_size = profile.allocation_size();
     const std::size_t capacity = (kNodeCount * (node_size + memtable::SkipListNode::REQUIRED_ALIGNMENT))
-                                 + config::MemoryConfig::DEFAULT_TLAB_SIZE
-                                 + effective_headroom(kDefaultHeadroom);
+                                 + config::MemoryConfig::DEFAULT_TLAB_SIZE + effective_headroom(kDefaultHeadroom);
     const std::string key = make_payload(profile.key_bytes, 'a');
     const std::string value = make_payload(profile.value_bytes, 'x');
 

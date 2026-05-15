@@ -163,7 +163,7 @@ static void BM_SystemHeapFragmentation(benchmark::State& state) {
     state.counters["ops_per_iteration"] = static_cast<double>(ops);
 }
 
-static void BM_TLABFragmentationStable(benchmark::State& state) {
+static void BM_ArenaChurnStable(benchmark::State& state) {
     const std::size_t ops = effective_ops(kDefaultOps);
     FragmentationStats aggregate{};
 
@@ -223,4 +223,4 @@ static void BM_TLABFragmentationStable(benchmark::State& state) {
 } // namespace stratadb::bench
 
 BENCHMARK(stratadb::bench::BM_SystemHeapFragmentation)->UseRealTime();
-BENCHMARK(stratadb::bench::BM_TLABFragmentationStable)->UseRealTime();
+BENCHMARK(stratadb::bench::BM_ArenaChurnStable)->UseRealTime();
