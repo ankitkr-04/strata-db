@@ -1,8 +1,3 @@
-// benchmarks/page_bench.cpp
-//
-// StrataDB Page Strategy & Prefaulting Benchmarks
-// Measures the OS-level paging impact (Standard 4K vs Huge 2M) and prefaulting costs.
-
 #include "benchmark_common.hpp"
 #include "stratadb/config/memory_config.hpp"
 #include "stratadb/config/memtable_config.hpp"
