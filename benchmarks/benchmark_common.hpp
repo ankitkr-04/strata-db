@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cerrno>
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
@@ -13,7 +14,6 @@
 #include <cstdlib>
 #include <limits>
 #include <string>
-#include <thread>
 #include <vector>
 
 namespace stratadb::bench {
@@ -93,8 +93,10 @@ struct LatencySummary {
 
     if (const char* raw_limit = std::getenv("STRATADB_BENCH_MAX_THREADS")) {
         char* end = nullptr;
+        errno = 0; // Clear errno before parsing
         const long parsed = std::strtol(raw_limit, &end, 10);
-        if (end != raw_limit && *end == '\0' && parsed > 0 && parsed <= std::numeric_limits<int>::max()) {
+        // Ensure no out-of-range errors and valid characters
+        if (errno == 0 && end != raw_limit && *end == '\0' && parsed > 0 && parsed <= std::numeric_limits<int>::max()) {
             cap = static_cast<int>(parsed);
         }
     }
@@ -127,13 +129,14 @@ class OneShotStartGate {
     void arrive_and_wait() noexcept {
         const int prior = ready_.fetch_add(1, std::memory_order_acq_rel);
         if (prior + 1 == participants_) {
+            // Last thread to arrive opens the gate and notifies everyone
             start_.store(true, std::memory_order_release);
+            start_.notify_all();
             return;
         }
 
-        while (!start_.load(std::memory_order_acquire)) {
-            std::this_thread::yield();
-        }
+        // Blocks efficiently without burning CPU or confusing the scheduler
+        start_.wait(false, std::memory_order_acquire);
     }
 
   private:
