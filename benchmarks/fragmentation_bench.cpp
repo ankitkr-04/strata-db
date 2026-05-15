@@ -113,30 +113,33 @@ static void BM_SystemHeapFragmentation(benchmark::State& state) {
     for (auto _ : state) {
         std::vector<void*> live(kLiveSlots, nullptr);
 
-        auto stats = run_fragmentation_loop(
+        auto stats =
+            run_fragmentation_loop(ops,
+                                   // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+                                   [&](std::size_t op, std::uint64_t r, std::size_t size, FragmentationStats&) noexcept
+                                       -> void* {
+                                       const auto slot = static_cast<std::size_t>((r >> 16) & (kLiveSlots - 1));
+                                       if (live[slot]) {
+                                           std::free(live[slot]);
+                                           live[slot] = nullptr;
+                                       }
 
-            ops,
-            // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
-            [&](std::size_t op, std::uint64_t r, std::size_t size, FragmentationStats&) noexcept -> void* {
-                const std::size_t slot = static_cast<std::size_t>((r >> 16) & (kLiveSlots - 1));
-                if (live[slot]) {
-                    std::free(live[slot]);
-                    live[slot] = nullptr;
-                }
+                                       void* ptr = std::malloc(size);
+                                       live[slot] = ptr;
 
-                void* ptr = std::malloc(size);
-                live[slot] = ptr;
+                                       if ((op & 3ULL) == 0) {
+                                           const std::size_t victim =
+                                               static_cast<std::size_t>((r >> 32) & (kLiveSlots - 1));
 
-                if ((op & 3ULL) == 0) {
-                    const std::size_t victim = static_cast<std::size_t>((r >> 32) & (kLiveSlots - 1));
-                    if (live[victim]) {
-                        std::free(live[victim]);
-                        live[victim] = nullptr;
-                    }
-                }
+                                           // FIX: Ensure we don't accidentally free the slot we JUST allocated
+                                           if (victim != slot && live[victim]) {
+                                               std::free(live[victim]);
+                                               live[victim] = nullptr;
+                                           }
+                                       }
 
-                return ptr;
-            });
+                                       return ptr;
+                                   });
 
         state.PauseTiming();
         for (void* ptr : live) {
