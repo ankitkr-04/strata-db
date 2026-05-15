@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <nmmintrin.h>
 
 namespace stratadb::utils {
@@ -11,21 +12,27 @@ namespace stratadb::utils {
 
     // Process 8 bytes (64 bits) at a time
     while (length >= 8) {
-        crc = static_cast<uint32_t>(_mm_crc32_u64(crc, *reinterpret_cast<const uint64_t*>(ptr)));
+        std::uint64_t word;
+        std::memcpy(&word, ptr, sizeof(word));
+        crc = static_cast<uint32_t>(_mm_crc32_u64(crc, word));
         ptr += 8;
         length -= 8;
     }
 
     // Process remaining 4 bytes
     if (length >= 4) {
-        crc = _mm_crc32_u32(crc, *reinterpret_cast<const uint32_t*>(ptr));
+        std::uint32_t dword;
+        std::memcpy(&dword, ptr, sizeof(dword));
+        crc = _mm_crc32_u32(crc, dword);
         ptr += 4;
         length -= 4;
     }
 
     // Process remaining 2 bytes
     if (length >= 2) {
-        crc = _mm_crc32_u16(crc, *reinterpret_cast<const uint16_t*>(ptr));
+        std::uint16_t word;
+        std::memcpy(&word, ptr, sizeof(word));
+        crc = _mm_crc32_u16(crc, word);
         ptr += 2;
         length -= 2;
     }
