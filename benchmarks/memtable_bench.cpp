@@ -1,27 +1,3 @@
-// benchmarks/memtable_bench.cpp
-//
-// Comprehensive StrataDB SkipListMemTable benchmark suite.
-//
-// Benchmark matrix:
-//   BM_MemTablePut          — write throughput: (threads × profile × key_dist)
-//   BM_MemTableGet          — read throughput:  (threads × profile × hit_pct)
-//   BM_MemTableRemove       — tombstone throughput: (threads × profile)
-//   BM_MemTableScan         — forward scan: (node_count) [DISABLED]
-//   BM_MemTableMixedRW      — concurrent mixed: (threads × read_pct × profile)
-//   BM_MemTablePutScaling   — thread-scaling curve: (threads), small_kv, random
-//
-// Every benchmark reports:
-//   items/s  — operations per second
-//   bytes/s  — payload bytes per second
-//   p50_ns   — median per-op latency
-//   p99_ns   — 99th-percentile per-op latency
-//
-// Run with:
-//   ./build/bench/memtable_bench --benchmark_min_time=0.5s
-//
-// Flamegraph-ready run (requires STRATADB_ENABLE_PROFILING=ON):
-//   perf stat -e cache-misses,dTLB-load-misses,cycles,instructions
-//       ./build/bench/memtable_bench --benchmark_filter=BM_MemTableGet
 
 #include "benchmark_common.hpp"
 #include "stratadb/config/memory_config.hpp"
@@ -34,7 +10,6 @@
 
 #include <algorithm>
 #include <atomic>
-#include <barrier>
 #include <benchmark/benchmark.h>
 #include <chrono>
 #include <cstddef>
@@ -47,14 +22,19 @@
 #include <thread>
 #include <vector>
 
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+#include <immintrin.h>
+#define CPU_PAUSE _mm_pause()
+#elif defined(__aarch64__) || defined(_M_ARM64)
+#define CPU_PAUSE __asm__ volatile("yield" ::: "memory")
+#else
+#define CPU_PAUSE std::atomic_signal_fence(std::memory_order_seq_cst)
+#endif
+
 namespace stratadb::bench {
 namespace {
 
 using Clock = std::chrono::steady_clock;
-
-// ═══════════════════════════════════════════════════════════════════
-// Workload Profiles
-// ═══════════════════════════════════════════════════════════════════
 
 struct KVProfile {
     const char* name;
@@ -63,20 +43,16 @@ struct KVProfile {
 };
 
 inline constexpr std::array<KVProfile, 4> kKVProfiles{{
-    {.name = "tiny", .key_bytes = 8, .value_bytes = 32},      // counters / flags
-    {.name = "small", .key_bytes = 24, .value_bytes = 128},   // session keys / web KV
-    {.name = "medium", .key_bytes = 64, .value_bytes = 512},  // document fragments
-    {.name = "large", .key_bytes = 128, .value_bytes = 2048}, // serialized protos / blobs
+    {.name = "tiny", .key_bytes = 8, .value_bytes = 32},
+    {.name = "small", .key_bytes = 24, .value_bytes = 128},
+    {.name = "medium", .key_bytes = 64, .value_bytes = 512},
+    {.name = "large", .key_bytes = 128, .value_bytes = 2048},
 }};
 
 [[nodiscard]] auto kv_profile(int idx) noexcept -> const KVProfile& {
     return kKVProfiles.at(static_cast<std::size_t>(idx));
 }
 
-// Key distribution (range arg encoding)
-//   0 = Sequential  — monotonically increasing, best-case cache behavior
-//   1 = Uniform     — iid uniform random over [0, key_space)
-//   2 = Hotspot     — 80% of ops hit 20% of keys (Pareto-like hot set)
 enum class KeyDist : uint8_t { Sequential = 0, Uniform = 1, Hotspot = 2 };
 
 [[nodiscard]] auto dist_name(KeyDist d) noexcept -> const char* {
@@ -91,65 +67,91 @@ enum class KeyDist : uint8_t { Sequential = 0, Uniform = 1, Hotspot = 2 };
     return "?";
 }
 
-// ═══════════════════════════════════════════════════════════════════
-// Key Generation
-// ═══════════════════════════════════════════════════════════════════
+struct alignas(utils::CACHE_LINE_SIZE) WorkerStats {
+    std::size_t puts{0};
+    std::size_t gets{0};
+    std::size_t ooms{0};
+    std::uint8_t failed{0};
+    std::vector<double> latencies;
 
-// Pre-generate all keys for a workload to avoid measuring std::string
-// construction inside the timed region.
+    WorkerStats() {
+        latencies.reserve(128);
+    }
+};
+
+class SpinGate {
+    alignas(utils::CACHE_LINE_SIZE) std::atomic<int> ready_{0};
+    alignas(utils::CACHE_LINE_SIZE) std::atomic<int> done_{0};
+    alignas(utils::CACHE_LINE_SIZE) std::atomic<int> start_{0};
+
+  public:
+    void worker_wait_start(int epoch) noexcept {
+        ready_.fetch_add(1, std::memory_order_acq_rel);
+        while (start_.load(std::memory_order_acquire) != epoch) {
+            CPU_PAUSE;
+        }
+    }
+
+    void worker_done() noexcept {
+        done_.fetch_add(1, std::memory_order_acq_rel);
+    }
+
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+    void main_wait_ready_and_start(int expected_workers, int epoch) noexcept {
+        while (ready_.load(std::memory_order_acquire) < expected_workers) {
+            CPU_PAUSE;
+        }
+        start_.store(epoch, std::memory_order_release);
+    }
+
+    void main_wait_done_and_reset(int expected_workers) noexcept {
+        while (done_.load(std::memory_order_acquire) < expected_workers) {
+            CPU_PAUSE;
+        }
+        ready_.store(0, std::memory_order_relaxed);
+        done_.store(0, std::memory_order_relaxed);
+    }
+};
+
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
 [[nodiscard]] auto pregenerate_keys(std::size_t count, std::size_t key_bytes, KeyDist dist, std::uint64_t thread_seed)
     -> std::vector<std::string> {
     std::mt19937_64 rng(thread_seed ^ 0xc0ffee'dead'beefULL);
-
-    const std::size_t hot_boundary = std::max<std::size_t>(1, count / 5); // 20% = hot set
+    const std::size_t hot_boundary = std::max<std::size_t>(1, count / 5);
 
     std::vector<std::string> keys;
     keys.reserve(count);
 
     for (std::size_t i = 0; i < count; ++i) {
         std::size_t idx = i;
-
         switch (dist) {
             case KeyDist::Sequential:
-                break; // idx unchanged
-
+                break;
             case KeyDist::Uniform:
                 idx = rng() % count;
                 break;
-
             case KeyDist::Hotspot: {
-                // 80 % of ops → bottom 20 % of key space
                 const bool hot = (rng() % 100u) < 80u;
                 idx = hot ? (rng() % hot_boundary)
                           : (hot_boundary + (rng() % std::max<std::size_t>(1, count - hot_boundary)));
                 break;
             }
         }
-
         keys.push_back(make_ordered_key(idx, key_bytes));
     }
-
     return keys;
 }
-
-// ═══════════════════════════════════════════════════════════════════
-// Fixture Helpers
-// ═══════════════════════════════════════════════════════════════════
 
 [[nodiscard]] auto make_memory_cfg(std::size_t bytes) noexcept -> config::MemoryConfig {
     config::MemoryConfig c;
     c.page_strategy = config::PageStrategy::Standard4K;
     c.prefault_on_init = false;
     c.total_budget_bytes = bytes;
-    c.tlab_size_bytes = config::MemoryConfig::DEFAULT_TLAB_SIZE;
-    c.block_alignment_bytes = config::MemoryConfig::DEFAULT_BLOCK_ALIGNMENT;
     return c;
 }
 
 [[nodiscard]] auto make_memtable_cfg(std::size_t budget) noexcept -> config::MemTableConfig {
     config::MemTableConfig c;
-    // Set triggers above budget so we never stall/flush during benchmarks.
     c.max_size_bytes = budget;
     c.flush_trigger_bytes = std::numeric_limits<std::size_t>::max();
     c.stall_trigger_bytes = std::numeric_limits<std::size_t>::max();
@@ -164,7 +166,7 @@ struct Fixture {
 [[nodiscard]] auto make_fixture(std::size_t arena_bytes) -> Fixture {
     auto exp = memory::Arena::create(make_memory_cfg(arena_bytes));
     if (!exp.has_value()) {
-        std::terminate(); // benchmark cannot proceed without memory
+        std::terminate();
     }
     Fixture f;
     f.arena = std::make_unique<memory::Arena>(std::move(*exp));
@@ -172,25 +174,11 @@ struct Fixture {
     return f;
 }
 
-[[nodiscard]] auto benchmark_arena_cap_bytes() noexcept -> std::size_t {
-    static constexpr std::size_t kDefaultArenaCap = 256ULL << 20;
-    const std::size_t host_ram = utils::total_physical_memory_bytes();
-    if (host_ram == 0) {
-        return kDefaultArenaCap;
-    }
-
-    const std::size_t scaled_cap = host_ram / 8;
-    return std::min(kDefaultArenaCap, scaled_cap);
-}
-
-// Conservative node-size estimate: assume average height=6 (geometric p=0.25
-// skip list), plus 25 % headroom for alignment waste and TLAB block overhead.
 [[nodiscard]] auto node_budget(const KVProfile& p, std::size_t count) noexcept -> std::size_t {
     const std::size_t per_node = memtable::SkipListNode::allocation_size(6, p.key_bytes, p.value_bytes);
-    return (per_node * count * 5) / 4; // ×1.25 headroom
+    return (per_node * count * 5) / 4;
 }
 
-// Extended latency summary: p50, p95, p99
 struct LatencyExt {
     double p50_ns{0};
     double p95_ns{0};
@@ -200,33 +188,16 @@ struct LatencyExt {
 [[nodiscard]] auto summarize_ext(std::vector<double> samples) -> LatencyExt {
     if (samples.empty())
         return {};
-
     const auto pct = [&](double q) -> double {
         const auto idx = static_cast<std::size_t>(q * static_cast<double>(samples.size() - 1));
         std::nth_element(samples.begin(), samples.begin() + static_cast<std::ptrdiff_t>(idx), samples.end());
         return samples[idx];
     };
-
-    // Call in ascending order so nth_element partitioning is valid
-    const double p50 = pct(0.50);
-    const double p95 = pct(0.95);
-    const double p99 = pct(0.99);
-    return {p50, p95, p99};
+    return {pct(0.50), pct(0.95), pct(0.99)};
 }
 
-// ═══════════════════════════════════════════════════════════════════
-// Constants
-// ═══════════════════════════════════════════════════════════════════
-
-// Reduced for architectural iteration:
 static constexpr std::size_t kOpsPerThread = 4096;
-
-// Reduced latency sampling frequency to cut down syscall overhead:
-static constexpr std::size_t kLatMask = 1023; // 1 in 1024
-
-// ═══════════════════════════════════════════════════════════════════
-// BM_MemTablePut
-// ═══════════════════════════════════════════════════════════════════
+static constexpr std::size_t kLatMask = 4095;
 
 void run_put(benchmark::State& state) {
     const int nthreads = static_cast<int>(state.range(0));
@@ -236,7 +207,6 @@ void run_put(benchmark::State& state) {
 
     state.SetLabel(std::string("put/") + profile.name + "/" + dist_name(dist));
 
-    // Pre-generate keys outside timed region; each thread gets a unique seed
     std::vector<std::vector<std::string>> t_keys(tc);
     std::vector<std::string> t_vals(tc);
     for (std::size_t t = 0; t < tc; ++t) {
@@ -244,52 +214,46 @@ void run_put(benchmark::State& state) {
         t_vals[t] = std::string(profile.value_bytes, static_cast<char>('A' + t % 26));
     }
 
-    std::atomic<bool> stop{false};
+    std::atomic<int> epoch_signal{0};
     std::atomic<memory::Arena*> g_arena{nullptr};
     std::atomic<memtable::SkipListMemTable*> g_mt{nullptr};
-    std::barrier<> go(nthreads + 1);
-    std::barrier<> done(nthreads + 1);
 
-    std::vector<char> w_failed(tc, 0);
-    std::vector<std::vector<double>> w_lat(tc);
-
+    SpinGate gate;
+    std::vector<WorkerStats> w_stats(tc);
     std::vector<std::thread> workers;
     workers.reserve(tc);
 
     for (int ti = 0; ti < nthreads; ++ti) {
-        // TSan FIX: Capture loop invariant pointers/references explicitly, capture `ti` via `t` by value.
-        workers.emplace_back([&stop,
-                              &g_arena,
-                              &g_mt,
-                              &go,
-                              &done,
-                              &w_failed,
-                              &w_lat,
-                              &t_keys,
-                              &t_vals,
-                              t = static_cast<std::size_t>(ti)] {
+        workers.emplace_back([&, t = static_cast<std::size_t>(ti)] {
+            int current_epoch = 1;
             const std::vector<std::string>& keys = t_keys[t];
             const std::string& val = t_vals[t];
 
             while (true) {
-                go.arrive_and_wait();
-                if (stop.load(std::memory_order_acquire))
+                int target = epoch_signal.load(std::memory_order_acquire);
+                if (target == -1)
                     break;
+                if (target != current_epoch) {
+                    CPU_PAUSE;
+                    continue;
+                }
 
                 memory::Arena* local_arena = g_arena.load(std::memory_order_acquire);
                 auto* mt = g_mt.load(std::memory_order_acquire);
 
                 if (!local_arena || !mt) {
-                    w_failed[t] = 1;
-                    done.arrive_and_wait();
+                    w_stats[t].failed = 1;
+                    gate.worker_wait_start(current_epoch);
+                    gate.worker_done();
+                    current_epoch++;
                     continue;
                 }
 
                 memory::TLAB tlab(*local_arena);
+                w_stats[t].latencies.clear();
+                w_stats[t].failed = 0;
 
-                w_lat[t].clear();
-                w_lat[t].reserve(kOpsPerThread / (kLatMask + 1) + 1);
-                w_failed[t] = 0;
+                gate.worker_wait_start(current_epoch);
 
                 for (std::size_t op = 0; op < kOpsPerThread; ++op) {
                     const bool sample = (op & kLatMask) == 0;
@@ -297,43 +261,45 @@ void run_put(benchmark::State& state) {
 
                     auto r = mt->put(keys[op], val, tlab);
 
-                    if (sample) {
-                        w_lat[t].push_back(std::chrono::duration<double, std::nano>(Clock::now() - t0).count());
-                    }
-
+                    if (sample)
+                        w_stats[t].latencies.push_back(
+                            std::chrono::duration<double, std::nano>(Clock::now() - t0).count());
                     if (r == memtable::PutResult::OutOfMemory) {
-                        w_failed[t] = 1;
+                        w_stats[t].failed = 1;
                         break;
                     }
                     benchmark::DoNotOptimize(r);
                 }
 
-                done.arrive_and_wait();
+                gate.worker_done();
+                current_epoch++;
             }
         });
     }
 
     std::vector<double> all_lat;
     std::size_t payload_bytes = 0;
+    int current_epoch = 1;
 
     for (auto _ : state) {
-        (void)_;
         state.PauseTiming();
 
         const std::size_t cap =
             node_budget(profile, kOpsPerThread * tc) + tc * config::MemoryConfig::DEFAULT_TLAB_SIZE + (64ULL << 20);
-
         auto fix = make_fixture(cap);
         g_arena.store(fix.arena.get(), std::memory_order_release);
         g_mt.store(fix.memtable.get(), std::memory_order_release);
 
+        epoch_signal.store(current_epoch, std::memory_order_release);
+
+        gate.main_wait_ready_and_start(nthreads, current_epoch);
         state.ResumeTiming();
-        go.arrive_and_wait();
-        done.arrive_and_wait();
+
+        gate.main_wait_done_and_reset(nthreads);
         state.PauseTiming();
 
         for (std::size_t t = 0; t < tc; ++t) {
-            if (w_failed[t]) {
+            if (w_stats[t].failed) {
                 state.SkipWithError("Arena OOM during put benchmark — increase headroom");
                 goto teardown;
             }
@@ -341,22 +307,22 @@ void run_put(benchmark::State& state) {
 
         payload_bytes += kOpsPerThread * tc * (profile.key_bytes + profile.value_bytes);
         for (std::size_t t = 0; t < tc; ++t) {
-            all_lat.insert(all_lat.end(), w_lat[t].begin(), w_lat[t].end());
+            all_lat.insert(all_lat.end(), w_stats[t].latencies.begin(), w_stats[t].latencies.end());
         }
 
+        current_epoch++;
         state.ResumeTiming();
     }
 
 teardown:
-    stop.store(true, std::memory_order_release);
-    go.arrive_and_wait();
+    epoch_signal.store(-1, std::memory_order_release);
     for (auto& w : workers)
         w.join();
 
     const auto total_ops = static_cast<std::int64_t>(state.iterations()) * static_cast<std::int64_t>(nthreads)
                            * static_cast<std::int64_t>(kOpsPerThread);
-
     const auto lat = summarize_ext(std::move(all_lat));
+
     state.SetItemsProcessed(total_ops);
     state.SetBytesProcessed(static_cast<std::int64_t>(payload_bytes));
     state.counters["p50_ns"] = lat.p50_ns;
@@ -368,10 +334,6 @@ static void BM_MemTablePut(benchmark::State& state) {
     run_put(state);
 }
 
-// ═══════════════════════════════════════════════════════════════════
-// BM_MemTableGet
-// ═══════════════════════════════════════════════════════════════════
-
 void run_get(benchmark::State& state) {
     const int nthreads = static_cast<int>(state.range(0));
     const auto& profile = kv_profile(static_cast<int>(state.range(1)));
@@ -380,8 +342,7 @@ void run_get(benchmark::State& state) {
 
     state.SetLabel("get/" + std::string(profile.name) + "/hit" + std::to_string(hit_pct));
 
-    static constexpr std::size_t kPopulateCount = 131'072;
-
+    static constexpr std::size_t kPopulateCount = 65'536;
     const std::size_t cap = node_budget(profile, kPopulateCount) + (64ULL << 20);
     auto fix = make_fixture(cap);
 
@@ -391,14 +352,13 @@ void run_get(benchmark::State& state) {
         for (std::size_t i = 0; i < kPopulateCount; ++i) {
             const auto key = make_ordered_key(i, profile.key_bytes);
             if (fix.memtable->put(key, seed_val, seed_tlab) != memtable::PutResult::Ok) {
-                state.SkipWithError("Fixture population failed — increase kPopulateCount budget");
+                state.SkipWithError("Fixture population failed");
                 return;
             }
         }
     }
 
     std::mt19937_64 probe_rng(0xfeedface'cafe1234ULL);
-
     std::vector<std::vector<std::string>> t_probe_keys(tc);
     for (std::size_t t = 0; t < tc; ++t) {
         t_probe_keys[t].reserve(kOpsPerThread);
@@ -410,28 +370,29 @@ void run_get(benchmark::State& state) {
         }
     }
 
-    std::atomic<bool> stop{false};
-    std::barrier<> go(nthreads + 1);
-    std::barrier<> done(nthreads + 1);
-
-    std::vector<std::vector<double>> w_lat(tc);
-
+    std::atomic<int> epoch_signal{0};
+    SpinGate gate;
+    std::vector<WorkerStats> w_stats(tc);
     std::vector<std::thread> workers;
     workers.reserve(tc);
 
     for (int ti = 0; ti < nthreads; ++ti) {
-        // TSan FIX: Explicit explicit captures
-        workers.emplace_back([&stop, &go, &done, &t_probe_keys, &fix, &w_lat, t = static_cast<std::size_t>(ti)] {
+        workers.emplace_back([&, t = static_cast<std::size_t>(ti)] {
+            int current_epoch = 1;
             const std::vector<std::string>& keys = t_probe_keys[t];
             const memtable::SkipListMemTable& mt = *fix.memtable;
 
             while (true) {
-                go.arrive_and_wait();
-                if (stop.load(std::memory_order_acquire))
+                int target = epoch_signal.load(std::memory_order_acquire);
+                if (target == -1)
                     break;
+                if (target != current_epoch) {
+                    CPU_PAUSE;
+                    continue;
+                }
 
-                w_lat[t].clear();
-                w_lat[t].reserve(kOpsPerThread / (kLatMask + 1) + 1);
+                w_stats[t].latencies.clear();
+                gate.worker_wait_start(current_epoch);
 
                 for (std::size_t op = 0; op < kOpsPerThread; ++op) {
                     const bool sample = (op & kLatMask) == 0;
@@ -439,42 +400,47 @@ void run_get(benchmark::State& state) {
 
                     auto result = mt.get(keys[op]);
 
-                    if (sample) {
-                        w_lat[t].push_back(std::chrono::duration<double, std::nano>(Clock::now() - t0).count());
-                    }
-
+                    if (sample)
+                        w_stats[t].latencies.push_back(
+                            std::chrono::duration<double, std::nano>(Clock::now() - t0).count());
                     benchmark::DoNotOptimize(result);
                 }
 
-                done.arrive_and_wait();
+                gate.worker_done();
+                current_epoch++;
             }
         });
     }
 
     std::vector<double> all_lat;
+    int current_epoch = 1;
 
     for (auto _ : state) {
-        (void)_;
-        go.arrive_and_wait();
-        done.arrive_and_wait();
-
         state.PauseTiming();
+        epoch_signal.store(current_epoch, std::memory_order_release);
+
+        gate.main_wait_ready_and_start(nthreads, current_epoch);
+        state.ResumeTiming();
+
+        gate.main_wait_done_and_reset(nthreads);
+        state.PauseTiming();
+
         for (std::size_t t = 0; t < tc; ++t) {
-            all_lat.insert(all_lat.end(), w_lat[t].begin(), w_lat[t].end());
+            all_lat.insert(all_lat.end(), w_stats[t].latencies.begin(), w_stats[t].latencies.end());
         }
+        current_epoch++;
         state.ResumeTiming();
     }
 
-    stop.store(true, std::memory_order_release);
-    go.arrive_and_wait();
+    epoch_signal.store(-1, std::memory_order_release);
     for (auto& w : workers)
         w.join();
 
-    const auto total_ops = static_cast<std::int64_t>(state.iterations()) * static_cast<std::int64_t>(nthreads)
-                           * static_cast<std::int64_t>(kOpsPerThread);
-
     const auto lat = summarize_ext(std::move(all_lat));
-    state.SetItemsProcessed(total_ops);
+
+    state.SetItemsProcessed(static_cast<std::int64_t>(state.iterations()) * static_cast<std::int64_t>(nthreads)
+                            * static_cast<std::int64_t>(kOpsPerThread));
+
     state.counters["p50_ns"] = lat.p50_ns;
     state.counters["p95_ns"] = lat.p95_ns;
     state.counters["p99_ns"] = lat.p99_ns;
@@ -484,10 +450,6 @@ void run_get(benchmark::State& state) {
 static void BM_MemTableGet(benchmark::State& state) {
     run_get(state);
 }
-
-// ═══════════════════════════════════════════════════════════════════
-// BM_MemTableRemove
-// ═══════════════════════════════════════════════════════════════════
 
 void run_remove(benchmark::State& state) {
     const int nthreads = static_cast<int>(state.range(0));
@@ -501,106 +463,111 @@ void run_remove(benchmark::State& state) {
         t_keys[t] = pregenerate_keys(kOpsPerThread, profile.key_bytes, KeyDist::Uniform, t * 0xdeadface'1234'5678ULL);
     }
 
-    std::atomic<bool> stop{false};
+    std::atomic<int> epoch_signal{0};
     std::atomic<memory::Arena*> g_arena{nullptr};
     std::atomic<memtable::SkipListMemTable*> g_mt{nullptr};
-    std::barrier<> go(nthreads + 1);
-    std::barrier<> done(nthreads + 1);
 
-    std::vector<char> w_failed(tc, 0);
-    std::vector<std::vector<double>> w_lat(tc);
-
+    SpinGate gate;
+    std::vector<WorkerStats> w_stats(tc);
     std::vector<std::thread> workers;
     workers.reserve(tc);
 
     for (int ti = 0; ti < nthreads; ++ti) {
-        // TSan FIX: Explicit captures
-        workers.emplace_back(
-            [&stop, &go, &done, &g_arena, &g_mt, &t_keys, &w_failed, &w_lat, t = static_cast<std::size_t>(ti)] {
-                const std::vector<std::string>& keys = t_keys[t];
+        workers.emplace_back([&, t = static_cast<std::size_t>(ti)] {
+            int current_epoch = 1;
+            const std::vector<std::string>& keys = t_keys[t];
 
-                while (true) {
-                    go.arrive_and_wait();
-                    if (stop.load(std::memory_order_acquire))
-                        break;
-
-                    memory::Arena* local_arena = g_arena.load(std::memory_order_acquire);
-                    if (!local_arena)
-                        continue;
-
-                    memory::TLAB tlab(*local_arena);
-                    auto* mt = g_mt.load(std::memory_order_acquire);
-
-                    w_lat[t].clear();
-                    w_lat[t].reserve(kOpsPerThread / (kLatMask + 1) + 1);
-                    w_failed[t] = 0;
-
-                    for (std::size_t op = 0; op < kOpsPerThread; ++op) {
-                        const bool sample = (op & kLatMask) == 0;
-                        const Clock::time_point t0 = sample ? Clock::now() : Clock::time_point{};
-
-                        auto r = mt->remove(keys[op], tlab);
-
-                        if (sample) {
-                            w_lat[t].push_back(std::chrono::duration<double, std::nano>(Clock::now() - t0).count());
-                        }
-
-                        if (r == memtable::PutResult::OutOfMemory) {
-                            w_failed[t] = 1;
-                            break;
-                        }
-                        benchmark::DoNotOptimize(r);
-                    }
-
-                    done.arrive_and_wait();
+            while (true) {
+                int target = epoch_signal.load(std::memory_order_acquire);
+                if (target == -1)
+                    break;
+                if (target != current_epoch) {
+                    CPU_PAUSE;
+                    continue;
                 }
-            });
+
+                memory::Arena* local_arena = g_arena.load(std::memory_order_acquire);
+                auto* mt = g_mt.load(std::memory_order_acquire);
+
+                if (!local_arena || !mt) {
+                    w_stats[t].failed = 1;
+                    gate.worker_wait_start(current_epoch);
+                    gate.worker_done();
+                    current_epoch++;
+                    continue;
+                }
+
+                memory::TLAB tlab(*local_arena);
+                w_stats[t].latencies.clear();
+                w_stats[t].failed = 0;
+
+                gate.worker_wait_start(current_epoch);
+
+                for (std::size_t op = 0; op < kOpsPerThread; ++op) {
+                    const bool sample = (op & kLatMask) == 0;
+                    const Clock::time_point t0 = sample ? Clock::now() : Clock::time_point{};
+
+                    auto r = mt->remove(keys[op], tlab);
+
+                    if (sample)
+                        w_stats[t].latencies.push_back(
+                            std::chrono::duration<double, std::nano>(Clock::now() - t0).count());
+                    if (r == memtable::PutResult::OutOfMemory) {
+                        w_stats[t].failed = 1;
+                        break;
+                    }
+                    benchmark::DoNotOptimize(r);
+                }
+
+                gate.worker_done();
+                current_epoch++;
+            }
+        });
     }
 
     std::vector<double> all_lat;
+    int current_epoch = 1;
 
     for (auto _ : state) {
-        (void)_;
         state.PauseTiming();
 
-        const std::size_t tombstone_bytes = memtable::SkipListNode::allocation_size(1, profile.key_bytes, 0);
-        const std::size_t cap =
-            tombstone_bytes * kOpsPerThread * tc + tc * config::MemoryConfig::DEFAULT_TLAB_SIZE + (32ULL << 20);
-
+        const std::size_t cap = memtable::SkipListNode::allocation_size(1, profile.key_bytes, 0) * kOpsPerThread * tc
+                                + tc * config::MemoryConfig::DEFAULT_TLAB_SIZE + (32ULL << 20);
         auto fix = make_fixture(cap);
         g_arena.store(fix.arena.get(), std::memory_order_release);
         g_mt.store(fix.memtable.get(), std::memory_order_release);
 
+        epoch_signal.store(current_epoch, std::memory_order_release);
+
+        gate.main_wait_ready_and_start(nthreads, current_epoch);
         state.ResumeTiming();
-        go.arrive_and_wait();
-        done.arrive_and_wait();
+
+        gate.main_wait_done_and_reset(nthreads);
         state.PauseTiming();
 
         for (std::size_t t = 0; t < tc; ++t) {
-            if (w_failed[t]) {
+            if (w_stats[t].failed) {
                 state.SkipWithError("Arena OOM during remove benchmark");
                 goto teardown;
             }
         }
 
         for (std::size_t t = 0; t < tc; ++t) {
-            all_lat.insert(all_lat.end(), w_lat[t].begin(), w_lat[t].end());
+            all_lat.insert(all_lat.end(), w_stats[t].latencies.begin(), w_stats[t].latencies.end());
         }
-
+        current_epoch++;
         state.ResumeTiming();
     }
 
 teardown:
-    stop.store(true, std::memory_order_release);
-    go.arrive_and_wait();
+    epoch_signal.store(-1, std::memory_order_release);
     for (auto& w : workers)
         w.join();
 
-    const auto total_ops = static_cast<std::int64_t>(state.iterations()) * static_cast<std::int64_t>(nthreads)
-                           * static_cast<std::int64_t>(kOpsPerThread);
-
     const auto lat = summarize_ext(std::move(all_lat));
-    state.SetItemsProcessed(total_ops);
+    state.SetItemsProcessed(static_cast<std::int64_t>(state.iterations()) * static_cast<std::int64_t>(nthreads)
+                            * static_cast<std::int64_t>(kOpsPerThread));
+
     state.counters["p50_ns"] = lat.p50_ns;
     state.counters["p95_ns"] = lat.p95_ns;
     state.counters["p99_ns"] = lat.p99_ns;
@@ -609,19 +576,6 @@ teardown:
 static void BM_MemTableRemove(benchmark::State& state) {
     run_remove(state);
 }
-
-// ═══════════════════════════════════════════════════════════════════
-// BM_MemTableScan - DISABLED for rapid iteration
-// ═══════════════════════════════════════════════════════════════════
-/*
-static void BM_MemTableScan(benchmark::State& state) {
-    // Intentionally skipped to reduce bench time
-}
-*/
-
-// ═══════════════════════════════════════════════════════════════════
-// BM_MemTableMixedRW
-// ═══════════════════════════════════════════════════════════════════
 
 void run_mixed(benchmark::State& state) {
     const int nthreads = static_cast<int>(state.range(0));
@@ -634,116 +588,108 @@ void run_mixed(benchmark::State& state) {
     state.SetLabel("mixed/" + std::string(profile.name) + "/R" + std::to_string(read_pct) + "W"
                    + std::to_string(100 - read_pct));
 
-    auto fix = make_fixture(benchmark_arena_cap_bytes());
+    static constexpr std::size_t kPopulateCount = 16'384;
+    const std::size_t expected_total_keys = kPopulateCount + static_cast<std::size_t>(n_writers) * kOpsPerThread;
 
-    static constexpr std::size_t kSeedKeys = 16'384;
-    {
-        memory::TLAB seed(*fix.arena);
-        const std::string sv(profile.value_bytes, 'P');
-        for (std::size_t i = 0; i < kSeedKeys; ++i) {
-            (void)fix.memtable->put(make_ordered_key(i, profile.key_bytes), sv, seed);
+    std::mt19937_64 rng(0xbabecafe);
+    std::vector<std::vector<std::string>> t_keys(tc);
+
+    for (std::size_t t = 0; t < tc; ++t) {
+        t_keys[t].reserve(kOpsPerThread);
+        const bool is_writer = t < static_cast<std::size_t>(n_writers);
+
+        for (std::size_t op = 0; op < kOpsPerThread; ++op) {
+            if (is_writer) {
+                const bool append = (rng() % 100) < 80;
+                const std::size_t idx = append ? (kPopulateCount + t * kOpsPerThread + op) : (rng() % kPopulateCount);
+                t_keys[t].push_back(make_ordered_key(idx, profile.key_bytes));
+            } else {
+                const std::size_t idx = rng() % expected_total_keys;
+                t_keys[t].push_back(make_ordered_key(idx, profile.key_bytes));
+            }
         }
     }
 
-    std::vector<std::atomic<std::size_t>> writer_cursors(static_cast<std::size_t>(n_writers));
-    for (int w = 0; w < n_writers; ++w) {
-        writer_cursors[static_cast<std::size_t>(w)].store(kSeedKeys
-                                                              + static_cast<std::size_t>(w) * kOpsPerThread * 1000,
-                                                          std::memory_order_relaxed);
-    }
-
-    std::atomic<std::size_t> total_inserted{kSeedKeys};
     std::string writer_val(profile.value_bytes, 'W');
 
-    std::vector<std::size_t> w_put_count(tc, 0);
-    std::vector<std::size_t> w_get_count(tc, 0);
-    std::vector<std::size_t> w_oom_count(tc, 0);
-    std::vector<std::vector<double>> w_lat(tc);
+    std::atomic<int> epoch_signal{0};
+    std::atomic<memory::Arena*> g_arena{nullptr};
+    std::atomic<memtable::SkipListMemTable*> g_mt{nullptr};
 
-    std::atomic<bool> stop{false};
-    std::barrier<> go(nthreads + 1);
-    std::barrier<> done(nthreads + 1);
-
+    SpinGate gate;
+    std::vector<WorkerStats> w_stats(tc);
     std::vector<std::thread> workers;
     workers.reserve(tc);
 
     for (int ti = 0; ti < nthreads; ++ti) {
-        // TSan FIX: Explicit captures
-        workers.emplace_back([&stop,
-                              &go,
-                              &done,
-                              &fix,
-                              &writer_cursors,
-                              &total_inserted,
-                              &writer_val,
-                              &profile,
-                              &w_put_count,
-                              &w_get_count,
-                              &w_oom_count,
-                              &w_lat,
-                              n_writers,
-                              t = static_cast<std::size_t>(ti)] {
+        workers.emplace_back([&, n_writers, t = static_cast<std::size_t>(ti)] {
+            int current_epoch = 1;
             const bool is_writer = t < static_cast<std::size_t>(n_writers);
-            const std::uint64_t rng_seed =
-                static_cast<std::uint64_t>(t) * static_cast<std::uint64_t>(0xabcdef'123456ULL);
-            std::mt19937_64 rng(rng_seed);
+            const std::vector<std::string>& keys = t_keys[t];
 
             while (true) {
-                go.arrive_and_wait();
-                if (stop.load(std::memory_order_acquire))
+                int target = epoch_signal.load(std::memory_order_acquire);
+                if (target == -1)
                     break;
+                if (target != current_epoch) {
+                    CPU_PAUSE;
+                    continue;
+                }
 
-                w_lat[t].clear();
-                w_lat[t].reserve(kOpsPerThread / (kLatMask + 1) + 1);
-                w_put_count[t] = 0;
-                w_get_count[t] = 0;
-                w_oom_count[t] = 0;
+                memory::Arena* local_arena = g_arena.load(std::memory_order_acquire);
+                auto* mt = g_mt.load(std::memory_order_acquire);
+
+                if (!local_arena || !mt) {
+                    w_stats[t].failed = 1;
+                    gate.worker_wait_start(current_epoch);
+                    gate.worker_done();
+                    current_epoch++;
+                    continue;
+                }
+
+                memory::TLAB tlab(*local_arena);
+                w_stats[t].latencies.clear();
+                w_stats[t].puts = 0;
+                w_stats[t].gets = 0;
+                w_stats[t].ooms = 0;
+                w_stats[t].failed = 0;
+
+                gate.worker_wait_start(current_epoch);
 
                 if (is_writer) {
-                    const std::size_t writer_idx = t;
-                    memory::TLAB tlab(*fix.arena);
-
                     for (std::size_t op = 0; op < kOpsPerThread; ++op) {
                         const bool sample = (op & kLatMask) == 0;
                         const Clock::time_point t0 = sample ? Clock::now() : Clock::time_point{};
 
-                        const std::size_t idx = writer_cursors[writer_idx].fetch_add(1, std::memory_order_relaxed);
-                        const auto key = make_ordered_key(idx, profile.key_bytes);
-                        auto r = fix.memtable->put(key, writer_val, tlab);
+                        auto r = mt->put(keys[op], writer_val, tlab);
 
-                        if (sample) {
-                            w_lat[t].push_back(std::chrono::duration<double, std::nano>(Clock::now() - t0).count());
-                        }
-
+                        if (sample)
+                            w_stats[t].latencies.push_back(
+                                std::chrono::duration<double, std::nano>(Clock::now() - t0).count());
                         if (r == memtable::PutResult::OutOfMemory) {
-                            ++w_oom_count[t];
+                            ++w_stats[t].ooms;
                         } else {
-                            total_inserted.fetch_add(1, std::memory_order_relaxed);
-                            ++w_put_count[t];
+                            ++w_stats[t].puts;
                         }
                         benchmark::DoNotOptimize(r);
                     }
-
                 } else {
                     for (std::size_t op = 0; op < kOpsPerThread; ++op) {
                         const bool sample = (op & kLatMask) == 0;
                         const Clock::time_point t0 = sample ? Clock::now() : Clock::time_point{};
 
-                        const std::size_t inserted = total_inserted.load(std::memory_order_acquire);
-                        const std::size_t idx = rng() % std::max<std::size_t>(1, inserted);
-                        const auto key = make_ordered_key(idx, profile.key_bytes);
-                        auto result = fix.memtable->get(key);
+                        auto result = mt->get(keys[op]);
 
-                        if (sample) {
-                            w_lat[t].push_back(std::chrono::duration<double, std::nano>(Clock::now() - t0).count());
-                        }
-
-                        ++w_get_count[t];
+                        if (sample)
+                            w_stats[t].latencies.push_back(
+                                std::chrono::duration<double, std::nano>(Clock::now() - t0).count());
+                        ++w_stats[t].gets;
                         benchmark::DoNotOptimize(result);
                     }
                 }
 
-                done.arrive_and_wait();
+                gate.worker_done();
+                current_epoch++;
             }
         });
     }
@@ -752,31 +698,50 @@ void run_mixed(benchmark::State& state) {
     std::size_t sum_puts = 0;
     std::size_t sum_gets = 0;
     std::size_t sum_ooms = 0;
+    int current_epoch = 1;
 
     for (auto _ : state) {
-        (void)_;
-        go.arrive_and_wait();
-        done.arrive_and_wait();
-
         state.PauseTiming();
-        for (std::size_t t = 0; t < tc; ++t) {
-            sum_puts += w_put_count[t];
-            sum_gets += w_get_count[t];
-            sum_ooms += w_oom_count[t];
-            all_lat.insert(all_lat.end(), w_lat[t].begin(), w_lat[t].end());
+
+        const std::size_t cap =
+            node_budget(profile, expected_total_keys) + tc * config::MemoryConfig::DEFAULT_TLAB_SIZE + (64ULL << 20);
+        auto fix = make_fixture(cap);
+        g_arena.store(fix.arena.get(), std::memory_order_release);
+        g_mt.store(fix.memtable.get(), std::memory_order_release);
+
+        {
+            memory::TLAB seed(*fix.arena);
+            const std::string sv(profile.value_bytes, 'P');
+            for (std::size_t i = 0; i < kPopulateCount; ++i) {
+                (void)fix.memtable->put(make_ordered_key(i, profile.key_bytes), sv, seed);
+            }
         }
+
+        epoch_signal.store(current_epoch, std::memory_order_release);
+
+        gate.main_wait_ready_and_start(nthreads, current_epoch);
+        state.ResumeTiming();
+
+        gate.main_wait_done_and_reset(nthreads);
+        state.PauseTiming();
+
+        for (std::size_t t = 0; t < tc; ++t) {
+            sum_puts += w_stats[t].puts;
+            sum_gets += w_stats[t].gets;
+            sum_ooms += w_stats[t].ooms;
+            all_lat.insert(all_lat.end(), w_stats[t].latencies.begin(), w_stats[t].latencies.end());
+        }
+
+        current_epoch++;
         state.ResumeTiming();
     }
 
-    stop.store(true, std::memory_order_release);
-    go.arrive_and_wait();
+    epoch_signal.store(-1, std::memory_order_release);
     for (auto& w : workers)
         w.join();
 
-    const auto total_ops = static_cast<std::int64_t>(sum_puts + sum_gets);
     const auto lat = summarize_ext(std::move(all_lat));
-
-    state.SetItemsProcessed(total_ops);
+    state.SetItemsProcessed(static_cast<std::int64_t>(sum_puts + sum_gets));
     state.counters["put_ops"] = static_cast<double>(sum_puts);
     state.counters["get_ops"] = static_cast<double>(sum_gets);
     state.counters["oom_hits"] = static_cast<double>(sum_ooms);
@@ -789,39 +754,18 @@ static void BM_MemTableMixedRW(benchmark::State& state) {
     run_mixed(state);
 }
 
-// ═══════════════════════════════════════════════════════════════════
-// BM_MemTablePutScaling
-// ═══════════════════════════════════════════════════════════════════
-
 static void BM_MemTablePutScaling(benchmark::State& state) {
     run_put(state);
 }
 
-// ═══════════════════════════════════════════════════════════════════
-// BM_MemTablePutSteadyState - DISABLED for rapid iteration
-// ═══════════════════════════════════════════════════════════════════
-/*
-void run_put_steady_state(benchmark::State& state) {
-    // Intentionally skipped
-}
-static void BM_MemTablePutSteadyState(benchmark::State& state) {
-    run_put_steady_state(state);
-}
-*/
-
-// ═══════════════════════════════════════════════════════════════════
-// Registration Helpers
-// ═══════════════════════════════════════════════════════════════════
-
-// Tightly constrained matrix to reduce benchmark explosion
 void register_put_args(benchmark::Benchmark* b) {
-    b->Args({1, 1, 1}); // 1 thread, small KV, uniform
-    b->Args({4, 1, 1}); // 4 threads, small KV, uniform
+    b->Args({1, 1, 1});
+    b->Args({4, 1, 1});
 }
 
 void register_get_args(benchmark::Benchmark* b) {
-    b->Args({1, 1, 100}); // 1 thread, small KV, 100% hit
-    b->Args({4, 1, 100}); // 4 threads, small KV, 100% hit
+    b->Args({1, 1, 100});
+    b->Args({4, 1, 100});
 }
 
 void register_remove_args(benchmark::Benchmark* b) {
@@ -829,13 +773,9 @@ void register_remove_args(benchmark::Benchmark* b) {
     b->Args({4, 1});
 }
 
-[[maybe_unused]] void register_scan_args([[maybe_unused]] benchmark::Benchmark* b) {
-    // Disabled
-}
-
 void register_mixed_args(benchmark::Benchmark* b) {
-    b->Args({4, 80, 1}); // 1 thread, 80% read, small KV
-    b->Args({4, 80, 1}); // 4 threads, 80% read, small KV
+    b->Args({1, 80, 1});
+    b->Args({4, 80, 1});
 }
 
 void register_scaling_args(benchmark::Benchmark* b) {
@@ -846,23 +786,8 @@ void register_scaling_args(benchmark::Benchmark* b) {
 } // namespace
 } // namespace stratadb::bench
 
-// ═══════════════════════════════════════════════════════════════════
-// Benchmark Registration
-// ═══════════════════════════════════════════════════════════════════
-
-BENCHMARK(stratadb::bench::BM_MemTablePut)->Apply(stratadb::bench::register_put_args)->UseRealTime();
-
-BENCHMARK(stratadb::bench::BM_MemTableGet)->Apply(stratadb::bench::register_get_args)->UseRealTime();
-
-BENCHMARK(stratadb::bench::BM_MemTableRemove)->Apply(stratadb::bench::register_remove_args)->UseRealTime();
-
-// BENCHMARK(stratadb::bench::BM_MemTableScan)->Apply(stratadb::bench::register_scan_args)->UseRealTime();
-
-BENCHMARK(stratadb::bench::BM_MemTableMixedRW)
-    ->Apply(stratadb::bench::register_mixed_args)
-    ->UseRealTime()
-    ->MeasureProcessCPUTime();
-
-BENCHMARK(stratadb::bench::BM_MemTablePutScaling)->Apply(stratadb::bench::register_scaling_args)->UseRealTime();
-
-// BENCHMARK(stratadb::bench::BM_MemTablePutSteadyState)->Apply(stratadb::bench::register_scaling_args)->UseRealTime();
+BENCHMARK(stratadb::bench::BM_MemTablePut)->Apply(stratadb::bench::register_put_args);
+BENCHMARK(stratadb::bench::BM_MemTableGet)->Apply(stratadb::bench::register_get_args);
+BENCHMARK(stratadb::bench::BM_MemTableRemove)->Apply(stratadb::bench::register_remove_args);
+BENCHMARK(stratadb::bench::BM_MemTableMixedRW)->Apply(stratadb::bench::register_mixed_args);
+BENCHMARK(stratadb::bench::BM_MemTablePutScaling)->Apply(stratadb::bench::register_scaling_args);
