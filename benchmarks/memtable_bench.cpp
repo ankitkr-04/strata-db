@@ -30,9 +30,11 @@ using Clock = std::chrono::steady_clock;
 // File-local default. Override via STRATADB_BENCH_OPS_PER_THREAD.
 constexpr std::size_t kDefaultOpsPerThread = 4096;
 
+// Sample 1 in every 64 operations (bitwise AND with 63)
+constexpr std::size_t kLatencySampleMask = 63;
+
 // Default extra arena budget. Override via STRATADB_BENCH_ARENA_HEADROOM_MIB.
 constexpr std::size_t kDefaultHeadroomLarge = 64ULL << 20; // 64 MiB  (put / mixed)
-constexpr std::size_t kDefaultHeadroomSmall = 32ULL << 20; // 32 MiB  (remove)
 
 struct KVProfile {
     const char* name;
@@ -136,7 +138,6 @@ void run_put(benchmark::State& state) {
     const auto tc = static_cast<std::size_t>(nthreads);
 
     const std::size_t kOpsPerThread = effective_ops(kDefaultOpsPerThread);
-    const std::size_t kLatMask = kOpsPerThread - 1;
 
     state.SetLabel(std::string("put/") + profile.name + "/" + dist_name(dist));
 
@@ -161,7 +162,7 @@ void run_put(benchmark::State& state) {
     workers.reserve(tc);
 
     for (int ti = 0; ti < nthreads; ++ti) {
-        workers.emplace_back([&, kOpsPerThread, kLatMask, t = static_cast<std::size_t>(ti)] {
+        workers.emplace_back([&, kOpsPerThread, t = static_cast<std::size_t>(ti)] {
             const std::vector<std::string>& keys = t_keys[t];
             const std::string& val = t_vals[t];
 
@@ -184,7 +185,7 @@ void run_put(benchmark::State& state) {
                 go_barrier.arrive_and_wait();
 
                 for (std::size_t op = 0; op < kOpsPerThread; ++op) {
-                    const bool sample = (op & kLatMask) == 0;
+                    const bool sample = (op & kLatencySampleMask) == 0;
                     const Clock::time_point t0 = sample ? Clock::now() : Clock::time_point{};
 
                     auto r = shared_mt->put(keys[op], val, tlab);
@@ -233,7 +234,7 @@ void run_put(benchmark::State& state) {
 
         if (has_failure) {
             state.SkipWithError("Arena OOM during put benchmark — raise STRATADB_BENCH_ARENA_HEADROOM_MIB");
-            break; // RAII safe exit instead of goto
+            break;
         }
 
         payload_bytes += kOpsPerThread * tc * (profile.key_bytes + profile.value_bytes);
@@ -270,7 +271,6 @@ void run_get(benchmark::State& state) {
     const auto tc = static_cast<std::size_t>(nthreads);
 
     const std::size_t kOpsPerThread = effective_ops(kDefaultOpsPerThread);
-    const std::size_t kLatMask = kOpsPerThread - 1;
 
     state.SetLabel("get/" + std::string(profile.name) + "/hit" + std::to_string(hit_pct));
 
@@ -313,7 +313,7 @@ void run_get(benchmark::State& state) {
     workers.reserve(tc);
 
     for (int ti = 0; ti < nthreads; ++ti) {
-        workers.emplace_back([&, kOpsPerThread, kLatMask, t = static_cast<std::size_t>(ti)] {
+        workers.emplace_back([&, kOpsPerThread, t = static_cast<std::size_t>(ti)] {
             const std::vector<std::string>& keys = t_probe_keys[t];
             const memtable::SkipListMemTable& mt = *fix.memtable;
 
@@ -327,7 +327,7 @@ void run_get(benchmark::State& state) {
                 go_barrier.arrive_and_wait();
 
                 for (std::size_t op = 0; op < kOpsPerThread; ++op) {
-                    const bool sample = (op & kLatMask) == 0;
+                    const bool sample = (op & kLatencySampleMask) == 0;
                     const Clock::time_point t0 = sample ? Clock::now() : Clock::time_point{};
 
                     auto result = mt.get(keys[op]);
@@ -381,7 +381,6 @@ void run_remove(benchmark::State& state) {
     const auto tc = static_cast<std::size_t>(nthreads);
 
     const std::size_t kOpsPerThread = effective_ops(kDefaultOpsPerThread);
-    const std::size_t kLatMask = kOpsPerThread - 1;
 
     state.SetLabel(std::string("remove/") + profile.name);
 
@@ -404,7 +403,7 @@ void run_remove(benchmark::State& state) {
     workers.reserve(tc);
 
     for (int ti = 0; ti < nthreads; ++ti) {
-        workers.emplace_back([&, kOpsPerThread, kLatMask, t = static_cast<std::size_t>(ti)] {
+        workers.emplace_back([&, kOpsPerThread, t = static_cast<std::size_t>(ti)] {
             const std::vector<std::string>& keys = t_keys[t];
 
             while (true) {
@@ -426,7 +425,7 @@ void run_remove(benchmark::State& state) {
                 go_barrier.arrive_and_wait();
 
                 for (std::size_t op = 0; op < kOpsPerThread; ++op) {
-                    const bool sample = (op & kLatMask) == 0;
+                    const bool sample = (op & kLatencySampleMask) == 0;
                     const Clock::time_point t0 = sample ? Clock::now() : Clock::time_point{};
 
                     auto r = shared_mt->remove(keys[op], tlab);
@@ -450,13 +449,27 @@ void run_remove(benchmark::State& state) {
     for (auto _ : state) {
         state.PauseTiming();
 
-        const std::size_t cap = memtable::SkipListNode::allocation_size(1, profile.key_bytes, 0) * kOpsPerThread * tc
+        // The arena must have enough space for BOTH the populated keys AND the tombstone records
+        const std::size_t cap = node_budget(profile, kOpsPerThread * tc * 2)
                                 + (tc * config::MemoryConfig::DEFAULT_TLAB_SIZE)
-                                + effective_headroom(kDefaultHeadroomSmall);
+                                + effective_headroom(kDefaultHeadroomLarge);
 
         auto fix = make_fixture(cap);
         shared_arena = fix.arena.get();
         shared_mt = fix.memtable.get();
+
+        // Pre-populate the memtable with the EXACT keys we are about to test removing.
+        // This ensures the remove benchmark actually measures skip-list traversal and tombstoning, not
+        // miss-fallthrough.
+        {
+            memory::TLAB seed(*fix.arena);
+            const std::string sv(profile.value_bytes, 'V');
+            for (std::size_t t = 0; t < tc; ++t) {
+                for (const auto& key : t_keys[t]) {
+                    (void)fix.memtable->put(key, sv, seed);
+                }
+            }
+        }
 
         setup_barrier.arrive_and_wait();
 
@@ -504,7 +517,6 @@ void run_mixed(benchmark::State& state) {
     const auto tc = static_cast<std::size_t>(nthreads);
 
     const std::size_t kOpsPerThread = effective_ops(kDefaultOpsPerThread);
-    const std::size_t kLatMask = kOpsPerThread - 1;
     const int n_writers = std::max(1, (nthreads * (100 - read_pct)) / 100);
 
     state.SetLabel("mixed/" + std::string(profile.name) + "/R" + std::to_string(read_pct) + "W"
@@ -548,7 +560,7 @@ void run_mixed(benchmark::State& state) {
     workers.reserve(tc);
 
     for (int ti = 0; ti < nthreads; ++ti) {
-        workers.emplace_back([&, n_writers, kOpsPerThread, kLatMask, t = static_cast<std::size_t>(ti)] {
+        workers.emplace_back([&, n_writers, kOpsPerThread, t = static_cast<std::size_t>(ti)] {
             const bool is_writer = t < static_cast<std::size_t>(n_writers);
             const std::vector<std::string>& keys = t_keys[t];
 
@@ -573,7 +585,7 @@ void run_mixed(benchmark::State& state) {
 
                 if (is_writer) {
                     for (std::size_t op = 0; op < kOpsPerThread; ++op) {
-                        const bool sample = (op & kLatMask) == 0;
+                        const bool sample = (op & kLatencySampleMask) == 0;
                         const Clock::time_point t0 = sample ? Clock::now() : Clock::time_point{};
 
                         auto r = shared_mt->put(keys[op], writer_val, tlab);
@@ -590,7 +602,7 @@ void run_mixed(benchmark::State& state) {
                     }
                 } else {
                     for (std::size_t op = 0; op < kOpsPerThread; ++op) {
-                        const bool sample = (op & kLatMask) == 0;
+                        const bool sample = (op & kLatencySampleMask) == 0;
                         const Clock::time_point t0 = sample ? Clock::now() : Clock::time_point{};
 
                         auto result = shared_mt->get(keys[op]);
