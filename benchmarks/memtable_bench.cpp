@@ -1,7 +1,10 @@
+// benchmarks/memtable_bench.cpp
+//
+// StrataDB MemTable Microbenchmarks
+// Full SkipListMemTable suite: put, get, remove, mixed R/W.
 
 #include "benchmark_common.hpp"
 #include "stratadb/config/memory_config.hpp"
-#include "stratadb/config/memtable_config.hpp"
 #include "stratadb/memory/arena.hpp"
 #include "stratadb/memory/tlab.hpp"
 #include "stratadb/memtable/memtable_result.hpp"
@@ -14,8 +17,6 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
-#include <limits>
 #include <memory>
 #include <random>
 #include <string>
@@ -35,6 +36,13 @@ namespace stratadb::bench {
 namespace {
 
 using Clock = std::chrono::steady_clock;
+
+// File-local default. Override via STRATADB_BENCH_OPS_PER_THREAD.
+constexpr std::size_t kDefaultOpsPerThread = 4096;
+
+// Default extra arena budget. Override via STRATADB_BENCH_ARENA_HEADROOM_MIB.
+constexpr std::size_t kDefaultHeadroomLarge = 64ULL << 20; // 64 MiB  (put / mixed)
+constexpr std::size_t kDefaultHeadroomSmall = 32ULL << 20; // 32 MiB  (remove)
 
 struct KVProfile {
     const char* name;
@@ -67,6 +75,9 @@ enum class KeyDist : uint8_t { Sequential = 0, Uniform = 1, Hotspot = 2 };
     return "?";
 }
 
+// Cache-line isolated per-thread statistics.
+// alignas forces sizeof to be a multiple of 64; compiler inserts trailing padding.
+// No hand-rolled _pad[] needed.
 struct alignas(utils::CACHE_LINE_SIZE) WorkerStats {
     std::size_t puts{0};
     std::size_t gets{0};
@@ -79,6 +90,10 @@ struct alignas(utils::CACHE_LINE_SIZE) WorkerStats {
     }
 };
 
+// SpinGate: lightweight epoch-based barrier for repeated benchmark iterations.
+// Workers spin cheaply on the epoch counter; the main thread advances it.
+// Note: spinning burns CPU during PauseTiming() windows, but does not
+// affect the measured window since workers park before go() is called.
 class SpinGate {
     alignas(utils::CACHE_LINE_SIZE) std::atomic<int> ready_{0};
     alignas(utils::CACHE_LINE_SIZE) std::atomic<int> done_{0};
@@ -142,22 +157,6 @@ class SpinGate {
     return keys;
 }
 
-[[nodiscard]] auto make_memory_cfg(std::size_t bytes) noexcept -> config::MemoryConfig {
-    config::MemoryConfig c;
-    c.page_strategy = config::PageStrategy::Standard4K;
-    c.prefault_on_init = false;
-    c.total_budget_bytes = bytes;
-    return c;
-}
-
-[[nodiscard]] auto make_memtable_cfg(std::size_t budget) noexcept -> config::MemTableConfig {
-    config::MemTableConfig c;
-    c.max_size_bytes = budget;
-    c.flush_trigger_bytes = std::numeric_limits<std::size_t>::max();
-    c.stall_trigger_bytes = std::numeric_limits<std::size_t>::max();
-    return c;
-}
-
 struct Fixture {
     std::unique_ptr<memory::Arena> arena;
     std::unique_ptr<memtable::SkipListMemTable> memtable;
@@ -165,9 +164,8 @@ struct Fixture {
 
 [[nodiscard]] auto make_fixture(std::size_t arena_bytes) -> Fixture {
     auto exp = memory::Arena::create(make_memory_cfg(arena_bytes));
-    if (!exp.has_value()) {
+    if (!exp.has_value())
         std::terminate();
-    }
     Fixture f;
     f.arena = std::make_unique<memory::Arena>(std::move(*exp));
     f.memtable = std::make_unique<memtable::SkipListMemTable>(*f.arena, make_memtable_cfg(arena_bytes));
@@ -179,31 +177,15 @@ struct Fixture {
     return (per_node * count * 5) / 4;
 }
 
-struct LatencyExt {
-    double p50_ns{0};
-    double p95_ns{0};
-    double p99_ns{0};
-};
-
-[[nodiscard]] auto summarize_ext(std::vector<double> samples) -> LatencyExt {
-    if (samples.empty())
-        return {};
-    const auto pct = [&](double q) -> double {
-        const auto idx = static_cast<std::size_t>(q * static_cast<double>(samples.size() - 1));
-        std::nth_element(samples.begin(), samples.begin() + static_cast<std::ptrdiff_t>(idx), samples.end());
-        return samples[idx];
-    };
-    return {pct(0.50), pct(0.95), pct(0.99)};
-}
-
-static constexpr std::size_t kOpsPerThread = 4096;
-static constexpr std::size_t kLatMask = 4095;
-
 void run_put(benchmark::State& state) {
     const int nthreads = static_cast<int>(state.range(0));
     const auto& profile = kv_profile(static_cast<int>(state.range(1)));
     const auto dist = static_cast<KeyDist>(static_cast<int>(state.range(2)));
     const auto tc = static_cast<std::size_t>(nthreads);
+
+    // Runtime-configurable ops and mask. Must be power-of-two (enforced by env parsing).
+    const std::size_t kOpsPerThread = effective_ops(kDefaultOpsPerThread);
+    const std::size_t kLatMask = kOpsPerThread - 1;
 
     state.SetLabel(std::string("put/") + profile.name + "/" + dist_name(dist));
 
@@ -224,7 +206,7 @@ void run_put(benchmark::State& state) {
     workers.reserve(tc);
 
     for (int ti = 0; ti < nthreads; ++ti) {
-        workers.emplace_back([&, t = static_cast<std::size_t>(ti)] {
+        workers.emplace_back([&, kOpsPerThread, kLatMask, t = static_cast<std::size_t>(ti)] {
             int current_epoch = 1;
             const std::vector<std::string>& keys = t_keys[t];
             const std::string& val = t_vals[t];
@@ -238,14 +220,14 @@ void run_put(benchmark::State& state) {
                     continue;
                 }
 
-                memory::Arena* local_arena = g_arena.load(std::memory_order_acquire);
+                auto* local_arena = g_arena.load(std::memory_order_acquire);
                 auto* mt = g_mt.load(std::memory_order_acquire);
 
                 if (!local_arena || !mt) {
                     w_stats[t].failed = 1;
                     gate.worker_wait_start(current_epoch);
                     gate.worker_done();
-                    current_epoch++;
+                    ++current_epoch;
                     continue;
                 }
 
@@ -261,9 +243,10 @@ void run_put(benchmark::State& state) {
 
                     auto r = mt->put(keys[op], val, tlab);
 
-                    if (sample)
+                    if (sample) {
                         w_stats[t].latencies.push_back(
                             std::chrono::duration<double, std::nano>(Clock::now() - t0).count());
+                    }
                     if (r == memtable::PutResult::OutOfMemory) {
                         w_stats[t].failed = 1;
                         break;
@@ -272,7 +255,7 @@ void run_put(benchmark::State& state) {
                 }
 
                 gate.worker_done();
-                current_epoch++;
+                ++current_epoch;
             }
         });
     }
@@ -280,41 +263,45 @@ void run_put(benchmark::State& state) {
     std::vector<double> all_lat;
     std::size_t payload_bytes = 0;
     int current_epoch = 1;
+    bool had_error = false;
 
     for (auto _ : state) {
         state.PauseTiming();
 
-        const std::size_t cap =
-            node_budget(profile, kOpsPerThread * tc) + tc * config::MemoryConfig::DEFAULT_TLAB_SIZE + (64ULL << 20);
+        const std::size_t cap = node_budget(profile, kOpsPerThread * tc) + tc * config::MemoryConfig::DEFAULT_TLAB_SIZE
+                                + effective_headroom(kDefaultHeadroomLarge);
+
         auto fix = make_fixture(cap);
         g_arena.store(fix.arena.get(), std::memory_order_release);
         g_mt.store(fix.memtable.get(), std::memory_order_release);
 
         epoch_signal.store(current_epoch, std::memory_order_release);
-
         gate.main_wait_ready_and_start(nthreads, current_epoch);
-        state.ResumeTiming();
 
+        state.ResumeTiming();
         gate.main_wait_done_and_reset(nthreads);
         state.PauseTiming();
 
         for (std::size_t t = 0; t < tc; ++t) {
             if (w_stats[t].failed) {
-                state.SkipWithError("Arena OOM during put benchmark — increase headroom");
-                goto teardown;
+                state.SkipWithError("Arena OOM during put benchmark — raise STRATADB_BENCH_ARENA_HEADROOM_MIB");
+                had_error = true;
+                break;
             }
         }
+        if (had_error)
+            break;
 
         payload_bytes += kOpsPerThread * tc * (profile.key_bytes + profile.value_bytes);
         for (std::size_t t = 0; t < tc; ++t) {
             all_lat.insert(all_lat.end(), w_stats[t].latencies.begin(), w_stats[t].latencies.end());
         }
 
-        current_epoch++;
+        ++current_epoch;
         state.ResumeTiming();
     }
 
-teardown:
+    // Unconditional teardown — no goto needed.
     epoch_signal.store(-1, std::memory_order_release);
     for (auto& w : workers)
         w.join();
@@ -330,15 +317,14 @@ teardown:
     state.counters["p99_ns"] = lat.p99_ns;
 }
 
-static void BM_MemTablePut(benchmark::State& state) {
-    run_put(state);
-}
-
 void run_get(benchmark::State& state) {
     const int nthreads = static_cast<int>(state.range(0));
     const auto& profile = kv_profile(static_cast<int>(state.range(1)));
     const int hit_pct = static_cast<int>(state.range(2));
     const auto tc = static_cast<std::size_t>(nthreads);
+
+    const std::size_t kOpsPerThread = effective_ops(kDefaultOpsPerThread);
+    const std::size_t kLatMask = kOpsPerThread - 1;
 
     state.SetLabel("get/" + std::string(profile.name) + "/hit" + std::to_string(hit_pct));
 
@@ -377,7 +363,7 @@ void run_get(benchmark::State& state) {
     workers.reserve(tc);
 
     for (int ti = 0; ti < nthreads; ++ti) {
-        workers.emplace_back([&, t = static_cast<std::size_t>(ti)] {
+        workers.emplace_back([&, kOpsPerThread, kLatMask, t = static_cast<std::size_t>(ti)] {
             int current_epoch = 1;
             const std::vector<std::string>& keys = t_probe_keys[t];
             const memtable::SkipListMemTable& mt = *fix.memtable;
@@ -400,14 +386,15 @@ void run_get(benchmark::State& state) {
 
                     auto result = mt.get(keys[op]);
 
-                    if (sample)
+                    if (sample) {
                         w_stats[t].latencies.push_back(
                             std::chrono::duration<double, std::nano>(Clock::now() - t0).count());
+                    }
                     benchmark::DoNotOptimize(result);
                 }
 
                 gate.worker_done();
-                current_epoch++;
+                ++current_epoch;
             }
         });
     }
@@ -418,17 +405,16 @@ void run_get(benchmark::State& state) {
     for (auto _ : state) {
         state.PauseTiming();
         epoch_signal.store(current_epoch, std::memory_order_release);
-
         gate.main_wait_ready_and_start(nthreads, current_epoch);
-        state.ResumeTiming();
 
+        state.ResumeTiming();
         gate.main_wait_done_and_reset(nthreads);
         state.PauseTiming();
 
         for (std::size_t t = 0; t < tc; ++t) {
             all_lat.insert(all_lat.end(), w_stats[t].latencies.begin(), w_stats[t].latencies.end());
         }
-        current_epoch++;
+        ++current_epoch;
         state.ResumeTiming();
     }
 
@@ -437,24 +423,21 @@ void run_get(benchmark::State& state) {
         w.join();
 
     const auto lat = summarize_ext(std::move(all_lat));
-
     state.SetItemsProcessed(static_cast<std::int64_t>(state.iterations()) * static_cast<std::int64_t>(nthreads)
                             * static_cast<std::int64_t>(kOpsPerThread));
-
     state.counters["p50_ns"] = lat.p50_ns;
     state.counters["p95_ns"] = lat.p95_ns;
     state.counters["p99_ns"] = lat.p99_ns;
     state.counters["hit_pct"] = static_cast<double>(hit_pct);
 }
 
-static void BM_MemTableGet(benchmark::State& state) {
-    run_get(state);
-}
-
 void run_remove(benchmark::State& state) {
     const int nthreads = static_cast<int>(state.range(0));
     const auto& profile = kv_profile(static_cast<int>(state.range(1)));
     const auto tc = static_cast<std::size_t>(nthreads);
+
+    const std::size_t kOpsPerThread = effective_ops(kDefaultOpsPerThread);
+    const std::size_t kLatMask = kOpsPerThread - 1;
 
     state.SetLabel(std::string("remove/") + profile.name);
 
@@ -473,7 +456,7 @@ void run_remove(benchmark::State& state) {
     workers.reserve(tc);
 
     for (int ti = 0; ti < nthreads; ++ti) {
-        workers.emplace_back([&, t = static_cast<std::size_t>(ti)] {
+        workers.emplace_back([&, kOpsPerThread, kLatMask, t = static_cast<std::size_t>(ti)] {
             int current_epoch = 1;
             const std::vector<std::string>& keys = t_keys[t];
 
@@ -486,14 +469,14 @@ void run_remove(benchmark::State& state) {
                     continue;
                 }
 
-                memory::Arena* local_arena = g_arena.load(std::memory_order_acquire);
+                auto* local_arena = g_arena.load(std::memory_order_acquire);
                 auto* mt = g_mt.load(std::memory_order_acquire);
 
                 if (!local_arena || !mt) {
                     w_stats[t].failed = 1;
                     gate.worker_wait_start(current_epoch);
                     gate.worker_done();
-                    current_epoch++;
+                    ++current_epoch;
                     continue;
                 }
 
@@ -509,9 +492,10 @@ void run_remove(benchmark::State& state) {
 
                     auto r = mt->remove(keys[op], tlab);
 
-                    if (sample)
+                    if (sample) {
                         w_stats[t].latencies.push_back(
                             std::chrono::duration<double, std::nano>(Clock::now() - t0).count());
+                    }
                     if (r == memtable::PutResult::OutOfMemory) {
                         w_stats[t].failed = 1;
                         break;
@@ -520,46 +504,51 @@ void run_remove(benchmark::State& state) {
                 }
 
                 gate.worker_done();
-                current_epoch++;
+                ++current_epoch;
             }
         });
     }
 
     std::vector<double> all_lat;
     int current_epoch = 1;
+    bool had_error = false;
 
     for (auto _ : state) {
         state.PauseTiming();
 
         const std::size_t cap = memtable::SkipListNode::allocation_size(1, profile.key_bytes, 0) * kOpsPerThread * tc
-                                + tc * config::MemoryConfig::DEFAULT_TLAB_SIZE + (32ULL << 20);
+                                + tc * config::MemoryConfig::DEFAULT_TLAB_SIZE
+                                + effective_headroom(kDefaultHeadroomSmall);
+
         auto fix = make_fixture(cap);
         g_arena.store(fix.arena.get(), std::memory_order_release);
         g_mt.store(fix.memtable.get(), std::memory_order_release);
 
         epoch_signal.store(current_epoch, std::memory_order_release);
-
         gate.main_wait_ready_and_start(nthreads, current_epoch);
-        state.ResumeTiming();
 
+        state.ResumeTiming();
         gate.main_wait_done_and_reset(nthreads);
         state.PauseTiming();
 
         for (std::size_t t = 0; t < tc; ++t) {
             if (w_stats[t].failed) {
-                state.SkipWithError("Arena OOM during remove benchmark");
-                goto teardown;
+                state.SkipWithError("Arena OOM during remove benchmark — raise STRATADB_BENCH_ARENA_HEADROOM_MIB");
+                had_error = true;
+                break;
             }
         }
+        if (had_error)
+            break;
 
         for (std::size_t t = 0; t < tc; ++t) {
             all_lat.insert(all_lat.end(), w_stats[t].latencies.begin(), w_stats[t].latencies.end());
         }
-        current_epoch++;
+        ++current_epoch;
         state.ResumeTiming();
     }
 
-teardown:
+    // Unconditional teardown.
     epoch_signal.store(-1, std::memory_order_release);
     for (auto& w : workers)
         w.join();
@@ -567,14 +556,9 @@ teardown:
     const auto lat = summarize_ext(std::move(all_lat));
     state.SetItemsProcessed(static_cast<std::int64_t>(state.iterations()) * static_cast<std::int64_t>(nthreads)
                             * static_cast<std::int64_t>(kOpsPerThread));
-
     state.counters["p50_ns"] = lat.p50_ns;
     state.counters["p95_ns"] = lat.p95_ns;
     state.counters["p99_ns"] = lat.p99_ns;
-}
-
-static void BM_MemTableRemove(benchmark::State& state) {
-    run_remove(state);
 }
 
 void run_mixed(benchmark::State& state) {
@@ -582,6 +566,9 @@ void run_mixed(benchmark::State& state) {
     const int read_pct = static_cast<int>(state.range(1));
     const auto& profile = kv_profile(static_cast<int>(state.range(2)));
     const auto tc = static_cast<std::size_t>(nthreads);
+
+    const std::size_t kOpsPerThread = effective_ops(kDefaultOpsPerThread);
+    const std::size_t kLatMask = kOpsPerThread - 1;
 
     const int n_writers = std::max(1, (nthreads * (100 - read_pct)) / 100);
 
@@ -600,12 +587,12 @@ void run_mixed(benchmark::State& state) {
 
         for (std::size_t op = 0; op < kOpsPerThread; ++op) {
             if (is_writer) {
-                const bool append = (rng() % 100) < 80;
-                const std::size_t idx = append ? (kPopulateCount + t * kOpsPerThread + op) : (rng() % kPopulateCount);
+                const bool is_append = (rng() % 100) < 80;
+                const std::size_t idx =
+                    is_append ? (kPopulateCount + t * kOpsPerThread + op) : (rng() % kPopulateCount);
                 t_keys[t].push_back(make_ordered_key(idx, profile.key_bytes));
             } else {
-                const std::size_t idx = rng() % expected_total_keys;
-                t_keys[t].push_back(make_ordered_key(idx, profile.key_bytes));
+                t_keys[t].push_back(make_ordered_key(rng() % expected_total_keys, profile.key_bytes));
             }
         }
     }
@@ -622,7 +609,7 @@ void run_mixed(benchmark::State& state) {
     workers.reserve(tc);
 
     for (int ti = 0; ti < nthreads; ++ti) {
-        workers.emplace_back([&, n_writers, t = static_cast<std::size_t>(ti)] {
+        workers.emplace_back([&, n_writers, kOpsPerThread, kLatMask, t = static_cast<std::size_t>(ti)] {
             int current_epoch = 1;
             const bool is_writer = t < static_cast<std::size_t>(n_writers);
             const std::vector<std::string>& keys = t_keys[t];
@@ -636,22 +623,20 @@ void run_mixed(benchmark::State& state) {
                     continue;
                 }
 
-                memory::Arena* local_arena = g_arena.load(std::memory_order_acquire);
+                auto* local_arena = g_arena.load(std::memory_order_acquire);
                 auto* mt = g_mt.load(std::memory_order_acquire);
 
                 if (!local_arena || !mt) {
                     w_stats[t].failed = 1;
                     gate.worker_wait_start(current_epoch);
                     gate.worker_done();
-                    current_epoch++;
+                    ++current_epoch;
                     continue;
                 }
 
                 memory::TLAB tlab(*local_arena);
                 w_stats[t].latencies.clear();
-                w_stats[t].puts = 0;
-                w_stats[t].gets = 0;
-                w_stats[t].ooms = 0;
+                w_stats[t].puts = w_stats[t].gets = w_stats[t].ooms = 0;
                 w_stats[t].failed = 0;
 
                 gate.worker_wait_start(current_epoch);
@@ -663,14 +648,14 @@ void run_mixed(benchmark::State& state) {
 
                         auto r = mt->put(keys[op], writer_val, tlab);
 
-                        if (sample)
+                        if (sample) {
                             w_stats[t].latencies.push_back(
                                 std::chrono::duration<double, std::nano>(Clock::now() - t0).count());
-                        if (r == memtable::PutResult::OutOfMemory) {
-                            ++w_stats[t].ooms;
-                        } else {
-                            ++w_stats[t].puts;
                         }
+                        if (r == memtable::PutResult::OutOfMemory)
+                            ++w_stats[t].ooms;
+                        else
+                            ++w_stats[t].puts;
                         benchmark::DoNotOptimize(r);
                     }
                 } else {
@@ -680,31 +665,31 @@ void run_mixed(benchmark::State& state) {
 
                         auto result = mt->get(keys[op]);
 
-                        if (sample)
+                        if (sample) {
                             w_stats[t].latencies.push_back(
                                 std::chrono::duration<double, std::nano>(Clock::now() - t0).count());
+                        }
                         ++w_stats[t].gets;
                         benchmark::DoNotOptimize(result);
                     }
                 }
 
                 gate.worker_done();
-                current_epoch++;
+                ++current_epoch;
             }
         });
     }
 
     std::vector<double> all_lat;
-    std::size_t sum_puts = 0;
-    std::size_t sum_gets = 0;
-    std::size_t sum_ooms = 0;
+    std::size_t sum_puts = 0, sum_gets = 0, sum_ooms = 0;
     int current_epoch = 1;
 
     for (auto _ : state) {
         state.PauseTiming();
 
-        const std::size_t cap =
-            node_budget(profile, expected_total_keys) + tc * config::MemoryConfig::DEFAULT_TLAB_SIZE + (64ULL << 20);
+        const std::size_t cap = node_budget(profile, expected_total_keys) + tc * config::MemoryConfig::DEFAULT_TLAB_SIZE
+                                + effective_headroom(kDefaultHeadroomLarge);
+
         auto fix = make_fixture(cap);
         g_arena.store(fix.arena.get(), std::memory_order_release);
         g_mt.store(fix.memtable.get(), std::memory_order_release);
@@ -718,10 +703,9 @@ void run_mixed(benchmark::State& state) {
         }
 
         epoch_signal.store(current_epoch, std::memory_order_release);
-
         gate.main_wait_ready_and_start(nthreads, current_epoch);
-        state.ResumeTiming();
 
+        state.ResumeTiming();
         gate.main_wait_done_and_reset(nthreads);
         state.PauseTiming();
 
@@ -732,10 +716,11 @@ void run_mixed(benchmark::State& state) {
             all_lat.insert(all_lat.end(), w_stats[t].latencies.begin(), w_stats[t].latencies.end());
         }
 
-        current_epoch++;
+        ++current_epoch;
         state.ResumeTiming();
     }
 
+    // Unconditional teardown.
     epoch_signal.store(-1, std::memory_order_release);
     for (auto& w : workers)
         w.join();
@@ -749,18 +734,23 @@ void run_mixed(benchmark::State& state) {
     state.counters["p95_ns"] = lat.p95_ns;
     state.counters["p99_ns"] = lat.p99_ns;
 }
-
+// Benchmark registration
+static void BM_MemTablePut(benchmark::State& state) {
+    run_put(state);
+}
+static void BM_MemTableGet(benchmark::State& state) {
+    run_get(state);
+}
+static void BM_MemTableRemove(benchmark::State& state) {
+    run_remove(state);
+}
 static void BM_MemTableMixedRW(benchmark::State& state) {
     run_mixed(state);
 }
 
-static void BM_MemTablePutScaling(benchmark::State& state) {
-    run_put(state);
-}
-
 void register_put_args(benchmark::Benchmark* b) {
-    b->Args({1, 1, 1});
-    b->Args({4, 1, 1});
+    b->Args({1, 1, static_cast<int>(KeyDist::Uniform)});
+    b->Args({4, 1, static_cast<int>(KeyDist::Uniform)});
 }
 
 void register_get_args(benchmark::Benchmark* b) {
@@ -778,11 +768,6 @@ void register_mixed_args(benchmark::Benchmark* b) {
     b->Args({4, 80, 1});
 }
 
-void register_scaling_args(benchmark::Benchmark* b) {
-    b->Args({1, 1, 1});
-    b->Args({4, 1, 1});
-}
-
 } // namespace
 } // namespace stratadb::bench
 
@@ -790,4 +775,3 @@ BENCHMARK(stratadb::bench::BM_MemTablePut)->Apply(stratadb::bench::register_put_
 BENCHMARK(stratadb::bench::BM_MemTableGet)->Apply(stratadb::bench::register_get_args);
 BENCHMARK(stratadb::bench::BM_MemTableRemove)->Apply(stratadb::bench::register_remove_args);
 BENCHMARK(stratadb::bench::BM_MemTableMixedRW)->Apply(stratadb::bench::register_mixed_args);
-BENCHMARK(stratadb::bench::BM_MemTablePutScaling)->Apply(stratadb::bench::register_scaling_args);
