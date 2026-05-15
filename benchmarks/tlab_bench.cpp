@@ -1,3 +1,9 @@
+// benchmarks/tlab_bench.cpp
+//
+// StrataDB TLAB & Arena Contention Microbenchmarks
+// Measures Compare-And-Swap (CAS) failure rates and atomic contention
+// at the core allocator boundaries.
+
 #include "benchmark_common.hpp"
 #include "stratadb/config/memory_config.hpp"
 #include "stratadb/utils/math.hpp"
@@ -17,7 +23,6 @@ namespace {
 
 constexpr std::size_t kNodeSize = 256; // Standard representative allocation size
 constexpr std::size_t kAlignment = memtable::SkipListNode::REQUIRED_ALIGNMENT;
-constexpr std::size_t kOpsPerThread = 65536;
 constexpr std::size_t kTLABSize = config::MemoryConfig::DEFAULT_TLAB_SIZE;
 constexpr std::size_t kBlockAlignment = config::MemoryConfig::DEFAULT_BLOCK_ALIGNMENT;
 
@@ -141,7 +146,6 @@ class InstrumentedTLAB {
 struct alignas(utils::CACHE_LINE_SIZE) WorkerStats {
     std::size_t cas_attempts{0};
     std::size_t cas_failures{0};
-    char _pad[utils::CACHE_LINE_SIZE - (2 * sizeof(std::size_t))] = {0};
 };
 static_assert(sizeof(WorkerStats) % utils::CACHE_LINE_SIZE == 0, "WorkerStats risks false sharing");
 
@@ -150,8 +154,11 @@ void run_contention_benchmark(benchmark::State& state, std::string_view label) {
     const int thread_count = static_cast<int>(state.range(0));
     const auto tc = static_cast<std::size_t>(thread_count);
 
-    const std::size_t capacity_per_iter =
-        (tc * kOpsPerThread * (kNodeSize + kAlignment + 16)) + (UseTLAB ? (tc * kTLABSize) : 0);
+    // Leverage dynamic runtime configuration from benchmark_common.hpp
+    // Defaulting to 65536 for contention saturation unless overridden.
+    const std::size_t ops = effective_ops(65536);
+
+    const std::size_t capacity_per_iter = (tc * ops * (kNodeSize + kAlignment + 16)) + (UseTLAB ? (tc * kTLABSize) : 0);
 
     state.SetLabel(std::string(label));
 
@@ -188,7 +195,7 @@ void run_contention_benchmark(benchmark::State& state, std::string_view label) {
                 go_barrier.arrive_and_wait();
 
                 // Pure Hot Path
-                for (std::size_t i = 0; i < kOpsPerThread; ++i) {
+                for (std::size_t i = 0; i < ops; ++i) {
                     if constexpr (UseTLAB) {
                         const auto s = tlab->allocate(kNodeSize, kAlignment);
                         local_attempts += s.cas_attempts;
@@ -239,7 +246,7 @@ void run_contention_benchmark(benchmark::State& state, std::string_view label) {
         w.join();
 
     const auto total_ops = static_cast<std::int64_t>(state.iterations()) * static_cast<std::int64_t>(thread_count)
-                           * static_cast<std::int64_t>(kOpsPerThread);
+                           * static_cast<std::int64_t>(ops);
     state.SetItemsProcessed(total_ops);
     state.counters["total_atomic_ops"] = static_cast<double>(aggregate.cas_attempts);
     state.counters["failed_cas_retries"] = static_cast<double>(aggregate.cas_failures);
