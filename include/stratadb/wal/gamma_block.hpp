@@ -1,6 +1,6 @@
 #pragma once
 
-#include "stratadb/wal/wal_concept.hpp"
+#include "wal_concept.hpp"
 
 #define XXH_INLINE_ALL
 #include "xxhash.h"
@@ -29,65 +29,100 @@ struct alignas(4096) GammaBlock {
 
     alignas(8) std::array<std::byte, BlockSize - sizeof(Header)> arena;
 
-    size_t current_offset{0};
+    size_t append_offset_{sizeof(Header)};
+    size_t flush_offset_{0};
+
+    void init(uint64_t seq) noexcept {
+        header.sequence_number = seq;
+        header.block_hash = {0, 0};
+        header.record_count = 0;
+        header.flags = 0;
+        append_offset_ = sizeof(Header);
+        flush_offset_ = 0;
+    }
 
     // Implements WalBlockLayout
-    [[nodiscard]] auto append(std::span<const std::byte> key, std::span<const std::byte> value) -> bool {
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+    [[nodiscard]] auto append(std::span<const std::byte> key, std::span<const std::byte> value) noexcept -> bool {
         const auto k_len = static_cast<uint32_t>(key.size());
         const auto v_len = static_cast<uint32_t>(value.size());
 
         const size_t total_required = sizeof(k_len) + sizeof(v_len) + k_len + v_len;
 
         // Check capacity
-        if (current_offset + total_required > arena.size()) {
+        if (append_offset_ + total_required > arena.size()) {
             return false;
         }
 
-        // Write lengths (memcpy is safe for implicit lifetime creation of trivially copyable types)
-        std::memcpy(arena.data() + current_offset, &k_len, sizeof(k_len));
-        current_offset += sizeof(k_len);
+        auto* block_start = reinterpret_cast<std::byte*>(this);
 
-        std::memcpy(arena.data() + current_offset, &v_len, sizeof(v_len));
-        current_offset += sizeof(v_len);
+        //  Write lengths and data sequentially
+        std::memcpy(block_start + append_offset_, &k_len, sizeof(k_len));
+        append_offset_ += sizeof(k_len);
 
-        // Write payload
-        std::memcpy(arena.data() + current_offset, key.data(), k_len);
-        current_offset += k_len;
+        std::memcpy(block_start + append_offset_, &v_len, sizeof(v_len));
+        append_offset_ += sizeof(v_len);
 
-        std::memcpy(arena.data() + current_offset, value.data(), v_len);
-        current_offset += v_len;
+        std::memcpy(block_start + append_offset_, key.data(), k_len);
+        append_offset_ += k_len;
+
+        std::memcpy(block_start + append_offset_, value.data(), v_len);
+        append_offset_ += v_len;
 
         header.record_count++;
 
-        // HARDWARE SYMPATHY: Dynamic alignment padding to the next 8-byte boundary.
-        // Bitwise trick: (offset + 7) & ~7 rounds up to the nearest multiple of 8.
-        current_offset = (current_offset + 7) & ~7ULL;
+        append_offset_ = (append_offset_ + 7) & ~7ULL; // Align to 8 bytes
 
-        // Ensure padding didn't push us out of bounds (edge case handling)
-        if (current_offset > arena.size()) {
-            current_offset = arena.size();
-        }
+        if (append_offset_ > BlockSize)
+            append_offset_ = BlockSize; // Safety check to prevent overflow
 
         return true;
     }
+
+    [[nodiscard]] auto partial_flush() noexcept -> FlushResult {
+        size_t start_offset = flush_offset_;
+        size_t end_offset = (append_offset_ + 4095) & ~4095ULL; // Align up to 4KiB
+        if (end_offset > BlockSize)
+            end_offset = BlockSize;
+
+        if (append_offset_ < end_offset) {
+            std::memset(reinterpret_cast<std::byte*>(this) + append_offset_, 0, end_offset - append_offset_);
+        }
+
+        auto span = std::span<const std::byte>(reinterpret_cast<const std::byte*>(this) + start_offset,
+                                               end_offset - start_offset);
+
+        // SSD PHYSICS: Overlapping overwrites! The next append stays in the same sector.
+        // The hardware AWUPF guarantees it won't tear.
+        flush_offset_ = append_offset_ & ~4095ULL;
+
+        return {span, start_offset};
+    }
+
     // called by the producer thread when the block is full or needs to be sealed for I/O handoff
-    [[nodiscard]] auto finalize(uint64_t seq_num) -> std::span<const std::byte> {
-        header.sequence_number = seq_num;
-        // Zero the hash field before computing the hash to avoid circular dependency
-        header.block_hash = {0, 0};
+    [[nodiscard]] auto finalize(uint64_t seq_num) -> FlushResult {
+        size_t end_offset = (append_offset_ + 4095) & ~4095ULL;
+        if (end_offset > BlockSize)
+            end_offset = BlockSize;
 
-        // We return the total written size (Header + active arena)
-        const size_t total_written = sizeof(Header) + current_offset;
+        if (append_offset_ < end_offset) {
+            std::memset(reinterpret_cast<std::byte*>(this) + append_offset_, 0, end_offset - append_offset_);
+        }
 
-        // compute hash, use avx2/avx512 if available, otherwise fallback to scalar
-        header.block_hash = XXH3_128bits(this, current_offset);
+        // Compute hash over the entire valid block
+        header.block_hash = XXH3_128bits(this, end_offset);
 
-        // Safely cast `this` to byte pointer for the I/O engine
-        const auto* block_start = reinterpret_cast<const std::byte*>(this);
-        return {block_start, total_written};
+        // Because we modified the header (Sector 0), we MUST rewrite from offset 0
+        // to persist the final hash. NVMe handles large overwrites perfectly.
+        size_t start_offset = 0;
+        auto span = std::span<const std::byte>(reinterpret_cast<const std::byte*>(this) + start_offset,
+                                               end_offset - start_offset);
+
+        flush_offset_ = end_offset;
+        return {span, start_offset};
     }
 };
 
-static_assert(WALBlockLayout<GammaBlock<16384>>);
+static_assert(WALBlockLayout<GammaBlock<16384>>, "GammaBlock does not satisfy WALBlockLayout requirements.");
 
 } // namespace stratadb::wal

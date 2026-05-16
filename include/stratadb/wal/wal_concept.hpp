@@ -31,7 +31,7 @@ concept WALBlockLayout =
 
         // Seals the block, computes necessary whole-block CRCs (like XXH3), stamps sequence.
         // Returns the final memory view to be handed to the I/O engine.
-        { layout.finalize(seq) } -> std::same_as<std::span<const std::byte>>;
+        { layout.finalize(seq) } -> std::same_as<FlushResult>;
     };
 
 } // namespace stratadb::wal
