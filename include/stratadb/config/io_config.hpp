@@ -4,22 +4,38 @@
 
 namespace stratadb::config {
 
-enum class IoStrategy : std::uint8_t {
-    // Attempt to probe /sys/block. If permission denied (e.g., Docker),
-    // safely fallback to AdaptiveBuffered.
+enum class IOStrategy : std::uint8_t {
+    // Probes hardware capabilities via sysfs/statx and picks the best strategy below.
     AutoDetect,
 
-    // FOR: Enterprise PLP NVMe.
-    // MECHANISM: io_uring OP_URING_CMD passthrough. Zero fdatasync. Micro-batching.
-    DirectUringPassthrough,
+    // LEVEL 0: Posix pwritev + O_DIRECT. Uses `fallocate` for HDDs.
+    PosixDirect,
 
-    // FOR: Consumer NVMe / SATA SSDs.
-    // MECHANISM: io_uring block I/O + fdatasync. Absorbs 500ms GC stalls.
-    AdaptiveBuffered,
+    // LEVEL 1/2: io_uring + O_DIRECT.
+    // Batches multiple thread-local blocks into a single SQE chain.
+    // Uses hardware FUA (Force Unit Access) if supported to skip fdatasync.
+    UringGroupCommit,
 
-    // FOR: 7200RPM HDDs / Slow Network Block Storage.
-    // MECHANISM: multi-megabyte macro-batching to minimize mechanical seeks.
-    MacroBatched
+    // LEVEL 3: io_uring + pwritev2 + RWF_ATOMIC.
+    // Relies on Linux 6.11+ and NVMe AWUPF to safely overwrite 4KiB/16KiB
+    // sectors in-place, eliminating space waste and torn writes.
+    UringAtomic
+};
+
+struct IOConfig {
+    IOStrategy strategy{IOStrategy::AutoDetect};
+
+    // Size of the io_uring submission/completion queues (must be power of 2).
+    // Both WAL and SSTable instances of the IoEngine need this.
+    std::size_t uring_queue_depth{512};
+
+    // If > 0, tells the Linux kernel to spawn a dedicated SQPOLL thread.
+    // This allows the database to submit I/O with ZERO syscall context switches.
+    std::size_t uring_sqpoll_idle_ms{0};
+
+    // Bypasses kernel virtual memory mapping overhead during hot-path I/O.
+    bool pre_register_buffers{true};
+    bool pre_register_files{true};
 };
 
 } // namespace stratadb::config
