@@ -10,4 +10,7 @@ namespace stratadb::utils::os {
 // Safely probes the OS for the maximum allowed scatter-gather vector limit
 [[nodiscard]] auto get_iov_max() noexcept -> std::size_t;
 
+// Safely closes a file descriptor, ignoring any errors (e.g. EBADF)
+void close_fd(int fd) noexcept;
+
 } // namespace stratadb::utils::os
