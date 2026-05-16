@@ -35,7 +35,7 @@ auto sync_data(int fd) noexcept -> bool {
     return detail::sync_data_impl(fd);
 }
 
-}
+} // namespace stratadb::utils::os
 
 auto get_iov_max() noexcept -> std::size_t {
 #if defined(IOV_MAX)
@@ -53,5 +53,4 @@ void close_fd(int fd) noexcept {
 #endif
     }
 }
-
-} // namespace stratadb::utils::os
+// namespace stratadb::utils::os
