@@ -1,5 +1,7 @@
 #include "stratadb/utils/hardware.hpp"
 
+#include "stratadb/io/io_concept.hpp"
+
 #include <thread>
 
 #if defined(__linux__)
@@ -51,7 +53,7 @@ auto probe_io_capabilities_impl(int fd) noexcept -> io::IOCapabilities {
         caps.atomic_write_unit_max = physical;
     }
 
-    //  Rotational Media Check
+    // 2. Rotational Media Check
     struct stat st{};
     if (fstat(fd, &st) == 0) {
         std::string path = "/sys/dev/block/" + std::to_string(major(st.st_dev)) + ":" + std::to_string(minor(st.st_dev))
