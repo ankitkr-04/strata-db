@@ -40,7 +40,7 @@ This model exists to prevent drift between local builds, CI-style checks, and pr
 | Profiling toggle | `STRATADB_ENABLE_PROFILING` | Retains frame pointers for perf/flamegraph workflows |
 | Linker selection | `STRATADB_USE_MOLD` + `find_program(mold)` with fallback | Keeps fast-linker optimization optional instead of hard-required |
 | NUMA dependency | `stratadb` links `numa` | Enables NUMA-aware memory components in core library build |
-| Core sources | memory/config/memtable + `src/wal/wal_staging.cpp` + hardware utils | Ensures WAL staging internals are built with the same policy as other core subsystems |
+| Core sources | memory/config/memtable + `src/wal/wal_staging.cpp` + `src/memory/block_pool.cpp` + hardware utils | Ensures WAL staging and block-pool internals are built with the same policy as other core subsystems |
 | Testing | `stratadb_tests` + `gtest_discover_tests(...)` | Exposes fine-grained tests through CTest without manual registration |
 | Benchmarks | `STRATADB_BUILD_BENCHMARKS` gated by Release + no sanitizers | Avoids skewed benchmark results from debug/sanitizer instrumentation |
 

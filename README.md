@@ -29,6 +29,7 @@ StrataDB is a systems-focused database engine project built in modern C++ with e
 - Epoch reclamation mechanism with thread registration guards and deferred free pipeline.
 - Arena allocator with mmap-backed blocks, huge-page strategy fallback, and NUMA policy integration.
 - TLAB fast-path allocator backed by Arena refill semantics.
+ - `BlockPool` fixed-size pre-allocated payload block pool for low-latency producer/consumer workflows.
 - SkipList memtable with `put`/`remove`/`get`/`scan`, threshold signaling, and lock-free insertion path.
 - SkipList node binary layout with packed sequence+type trailer and overflow-safe allocation sizing.
 - WAL block representation with cache-line aligned metadata, tearing matrix, and bounded record metadata.

@@ -8,6 +8,7 @@ Date: 2026-04-27
 
 ## Change Summary
 - 2026-04-27: Created WAL staging architecture documentation from current code, covering block layout, thread-local staging state, handoff queue behavior, and known unimplemented flush pipeline boundaries.
+- 2026-05-16: Noted new `BlockPool` low-level component presence in the memory subsystem and recorded that WAL staging does not yet consume `BlockPool` by default (integration is a future optimization).
 
 ## Purpose
 Document the current in-memory WAL staging path used before durable persistence, including exactly what is implemented and what is still intentionally incomplete.

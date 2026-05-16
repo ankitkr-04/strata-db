@@ -4,13 +4,14 @@ Author: Ankit Kumar
 Date: 2026-04-20
 
 ## Last Updated
-2026-04-27
+2026-05-16
 
 ## Change Summary
 - 2026-04-20: Created architecture documentation for Arena allocation, NUMA/page strategy behavior, and validation/perf workflow.
 - 2026-04-21: Reworked into full systems-level format, corrected strict-local NUMA failure semantics, added explicit thread interaction and memory lifecycle diagrams, and expanded failure and validation matrices.
 - 2026-04-23: Added related-document navigation for TLAB and memtable consumers.Synced option names and allocation guards to current code (`prefault_on_init`, power-of-two alignment checks, and overflow-safe bump path)
 - 2026-04-27: Updated cross-component references to include WAL staging as an Arena consumer and synced document update metadata.
+- 2026-05-16: Documented new `BlockPool` component added to memory subsystem; clarified Arena/BlockPool relationship and noted integration surface. Synced text to match current headers in `include/stratadb/memory`.
 
 ## Purpose
 Document how Arena reserves and serves bounded memory to concurrent subsystems, how configuration drives mapping and placement behavior, and which guarantees and failure modes callers must handle.
@@ -266,6 +267,33 @@ CAS retries can rise under contention, but no lock convoying is introduced.
 - [06-skiplist-node.md](06-skiplist-node.md)
 - [07-wal-staging.md](07-wal-staging.md)
 
+## BlockPool (New Component)
+
+### Why This Exists
+Provide a fixed-size, pre-allocated pool of uniformly sized payload blocks for low-latency producer/consumer workflows (e.g. WAL payload buffers) without per-block heap allocation overhead.
+
+### Responsibility
+Manage a contiguous arena of fixed-size blocks and a lightweight ring routing table to acquire/release blocks with wait/notify semantics suitable for single-producer/multi-consumer and multi-producer/single-consumer patterns.
+
+### How It Works
+- `BlockPool` allocates a single contiguous payload array (256MiB by default) aligned for I/O-friendly boundaries.
+- Producers call `acquire_block()` which uses an atomic head/tail ring reservation and may wait on `tail_.wait(...)` when the pool is empty.
+- A single producer calls `release_block()` to publish returned block ids into the tail ring and `tail_.notify_one()` to wake waiters.
+
+### Concurrency Model
+- Lock-free ring-style handoff: `head_`/`tail_` are atomic cursors with `compare_exchange_weak` on acquire.
+- `release_block()` is single-producer safe without locks; `acquire_block()` supports multiple consumers via atomic CAS and wait/notify.
+
+### Trade-offs
+- Pros: predictable block reuse, no per-block heap churn, aligned payload for direct-IO-friendly buffers.
+- Cons: fixed total capacity (256MiB) and block-count limits require workload sizing; contiguous allocation may fail on constrained hosts.
+
+### Observability / Integration Notes
+- `BlockPool` is declared at `include/stratadb/memory/block_pool.hpp` and implemented in `src/memory/block_pool.cpp`.
+- At time of writing, `BlockPool` is a new low-level building block and is not yet wired into all potential consumers; WAL staging or other high-throughput pipelines may adopt it as an optimization path.
+
 ## Notes
 - Not verified: strict-local mbind failure behavior in automated tests (current suite validates interleaved and prefault success paths).
 - Not verified: contention scaling characteristics at higher thread counts than current concurrent test coverage.
+
+- Not verified: `BlockPool` runtime integration surface with WAL staging and direct-IO flush pipeline.
