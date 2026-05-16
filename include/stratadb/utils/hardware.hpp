@@ -1,11 +1,11 @@
 #pragma once
+#include "stratadb/io/io_concept.hpp"
 
 #include <cstddef>
 #include <cstdint>
 #include <new>
 
 namespace stratadb::utils {
-using namespace stratadb::io::IOCapabilities;
 
 #if defined(__cpp_lib_hardware_interference_size) && (__cpp_lib_hardware_interference_size >= 201603L)
 inline constexpr std::size_t CACHE_LINE_SIZE = std::hardware_destructive_interference_size;
