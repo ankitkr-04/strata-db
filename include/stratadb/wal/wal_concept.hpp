@@ -10,7 +10,7 @@ namespace stratadb::wal {
 // Represents the state of a partial flush for O_DIRECT RMW
 struct FlushResult {
     std::span<const std::byte> memory_to_write;
-    size_t new_flush_offset;
+    std::size_t block_internal_offset;
 };
 
 // Physical Wal block layout must be able to append KV pairs,
@@ -18,6 +18,9 @@ struct FlushResult {
 template <typename T>
 concept WALBlockLayout =
     requires(T layout, std::span<const std::byte> key, std::span<const std::byte> value, uint64_t seq) {
+        // Initialize the block with its base sequence number before any appends.
+        { layout.init(seq) } -> std::same_as<void>;
+
         // Attempt to append, returning false if the block is out of space.
         { layout.append(key, value) } -> std::same_as<bool>;
 
