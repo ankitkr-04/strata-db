@@ -102,6 +102,7 @@ add_library(stratadb STATIC
   src/utils/hardware.cpp
   src/utils/os.cpp
   src/memory/block_pool.cpp
+  src/io/posix_io_engine.cpp
 )
 
 target_include_directories(stratadb PUBLIC include PRIVATE src)
