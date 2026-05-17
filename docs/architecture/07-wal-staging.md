@@ -1,238 +1,126 @@
 # WAL Staging Architecture
 
-Author: Ankit Kumar
+Author: Ankit Kumar  
 Date: 2026-04-27
 
 ## Last Updated
-2026-04-27
+2026-05-17
 
 ## Change Summary
-- 2026-04-27: Created WAL staging architecture documentation from current code, covering block layout, thread-local staging state, handoff queue behavior, and known unimplemented flush pipeline boundaries.
-- 2026-05-16: Noted new `BlockPool` low-level component presence in the memory subsystem and recorded that WAL staging does not yet consume `BlockPool` by default (integration is a future optimization).
+- 2026-04-27: Original WAL staging draft (basic staging & handoff).  
+- 2026-05-17: Rewrote to clarify the critical distinction "Block Sealing ≠ Block Flushing", document `GammaBlock` (SSD-oriented) vs `DeltaBlock` (HDD-oriented) layouts, and justify `XXH3` vs `CRC32C` selection. Aligned claims to source code where possible.
 
 ## Purpose
-Document the current in-memory WAL staging path used before durable persistence, including exactly what is implemented and what is still intentionally incomplete.
+Explain the in-memory WAL staging semantics that matter for correctness and durability, focusing on the recent break-through: sealing a block for handoff is not the same as flushing it to durable media. Document the two concrete block layouts (`GammaBlock` and `DeltaBlock`) and why they exist.
 
 ## Overview
-WAL staging in the current repository is a pre-flush assembly path:
+The staging subsystem assembles WAL blocks in thread-local memory and hands completed (sealed) blocks to a flush pipeline. Two distinct hardware realities drive different block layouts and handoff semantics:
 
-1. Writers call stage_write(sequence, key, value).
-2. Data is appended into a thread-local current WalBlock allocated from Arena-backed TLAB.
-3. Full blocks are moved into a ready queue under a mutex.
-4. harvest_ready_blocks drains the queue for flush handling.
+- SSDs (atomic overlapping overwrites on small LBAs) are modeled by `GammaBlock` and permit whole-block metadata (a single 128-bit `XXH3` hash) written with an overwrite of sector 0. See [include/stratadb/wal/gamma_block.hpp](include/stratadb/wal/gamma_block.hpp).
+- HDDs (rotational, 4Kn physical sectors, mechanical seek cost) are modeled by `DeltaBlock` and use per-sector `CRC32C` checksums to seal each sector before advancing. See [include/stratadb/wal/delta_block.hpp](include/stratadb/wal/delta_block.hpp).
 
-Important boundary: actual disk I/O orchestration is not implemented in this component yet. The harvest path currently drains ready blocks but does not issue writes.
+Key takeaway: sealing a block makes it ready for the I/O engine (no further in-memory mutation), but flushing is the act of handing that sealed, sector-aligned span to the `PosixIoEngine` (or other engine) and ensuring the OS/hardware makes it durable. The staging code performs sealing; the IO engine performs flushing.
 
 ## System Model
-| Layer | Type | Responsibility | Ownership Model |
-| --- | --- | --- | --- |
-| Physical block layout | WalBlock<BlockSize> | Header, tearing matrix, metadata, payload packing | Value type in Arena/TLAB memory |
-| Staging engine | WalStaging<BlockSize> | Append records and handoff completed blocks | Shared object with thread-local writer state |
-| Type dispatch surface | WalManager variant | Select block size specialization | Single manager instance wrapper |
-
-| Sector Mode | Block Size | Variant Type |
+| Component | Responsibility | Code reference |
 | --- | --- | --- |
-| Legacy HDD | 512 | WalStaging<SectorSize::LegacyHDD> |
-| Standard NVMe | 4096 | WalStaging<SectorSize::StandardNVMe> |
-| Advanced Format | 8192 | WalStaging<SectorSize::AdvancedFormat> |
-| Enterprise NVMe | 16384 | WalStaging<SectorSize::EnterpriseNVMe> |
+| `GammaBlock<BlockSize>` | SSD-oriented block layout: whole-block final hash computed with `XXH3_128bits`, seals by rewriting from offset `0` to the final end to persist header mutation. | [include/stratadb/wal/gamma_block.hpp](include/stratadb/wal/gamma_block.hpp)
+| `DeltaBlock<BlockSize>` | HDD-oriented block layout: per-sector CRC32C checksums are written into reserved CRC slots (last 4 bytes of each 4KiB sector); sealing a sector advances the append cursor to the next sector boundary. | [include/stratadb/wal/delta_block.hpp](include/stratadb/wal/delta_block.hpp)
+| `WalManager` | Variant dispatch selecting pipelines: `Ssd4kPipeline`, `Ssd16kPipeline`, `Hdd4kPipeline` inferred from device probing. | [include/stratadb/wal/wal_manager.hpp](include/stratadb/wal/wal_manager.hpp)
 
 ## Architecture / Design
-| Area | Current Implementation | Why It Matters |
-| --- | --- | --- |
-| Block alignment | WalBlock is alignas(BlockSize) | Keeps block storage and metadata aligned with physical boundary assumptions |
-| Header model | sequence, physical_lba, payload/header CRC fields, epoch, payload bytes, record count | Supports future durability/recovery checks and partial-write diagnostics |
-| Tearing matrix | One byte per cache line in block payload region (padded) | Supports cache-line-level atomicity/tearing detection strategy |
-| Record metadata | Fixed MAX_RECORDS arrays for opcodes and key lengths | Enables compact side metadata lookup for payload parsing |
-| Writer state | thread_local array indexed by instance_id | Avoids global per-write allocator and synchronization overhead |
-| Handoff queue | ready_blocks_ protected by handoff_mutex_ | Allows producer threads to pass full blocks to flusher path |
+### Why Block Sealing ≠ Block Flushing
+What: sealing is a purely in-memory state transition on the staging side (compute trailing checksums/hashes, zero-pad to sector boundaries, and mark the block's flush span). Flushing is the I/O engine's responsibility to transfer the sealed span to storage and drive it durable.
 
-## Data Flow
+Why this matters: conflating the two hides subtle but important assumptions about hardware write atomicity, overwrites, and the cost model for rotational devices. A sealed `GammaBlock` may require rewriting sector zero because the header (at offset 0) is updated during finalize — on SSDs this is safe (overwrites don't tear across sectors); on HDDs this would require extra care because partial sector writes and mechanical ordering can break checksum invariants.
+
+How it works (summary):
+- Staging appends records into a thread-local block until append fails.  
+- `partial_flush()` and `finalize()` produce `FlushResult` describing a sector-aligned span to give to the IO engine.  
+- The IO engine performs the writev/pwritev and then calls the appropriate sync/truncate/fdatasync semantics to guarantee durability.
+
+## Data Flow (high level)
 ```mermaid
-flowchart TD
-    A[Writer calls stage_write] --> B[Acquire Epoch ReadGuard]
-    B --> C[Load thread-local state for instance]
-    C --> D{TLAB exists for this thread?}
-    D -- no --> E[Create thread-local TLAB from staging Arena]
-    D -- yes --> F[Continue]
-    E --> F
-
-    F --> G{current block exists?}
-    G -- yes --> H[Check payload and record capacity]
-    H --> I{full?}
-    I -- yes --> J[Push current block to ready queue under mutex]
-    J --> K[Clear current block]
-    I -- no --> L[Append key and value bytes]
-
-    G -- no --> M[Allocate new WalBlock from TLAB]
-    K --> M
-    M --> N{allocation success?}
-    N -- no --> O[Return false]
-    N -- yes --> P[Initialize header fields]
-    P --> L
-
-    L --> Q[Update payload bytes and per-record metadata]
-    Q --> R[Return true]
-
-    S[harvest_ready_blocks] --> T[Swap ready queue under mutex]
-    T --> U{queue empty?}
-    U -- yes --> V[Return]
-    U -- no --> W[Blocks available for flush pipeline]
-```
-
-### Thread Interaction
-```mermaid
-sequenceDiagram
-    participant W1 as Writer Thread 1
-    participant W2 as Writer Thread 2
-    participant S as WalStaging
-    participant Q as Ready Queue
-
-    W1->>S: stage_write(seq, key, value)
-    W1->>S: append into thread-local current block
-
-    W2->>S: stage_write(seq, key, value)
-    W2->>S: append into its own thread-local current block
-
-    W1->>S: detects block full
-    W1->>Q: push completed block (mutex protected)
-
-    S->>S: harvest_ready_blocks
-    S->>Q: swap queue contents (mutex protected)
-```
-
-### Memory Lifecycle
-```mermaid
-stateDiagram-v2
-    [*] --> Unallocated
-    Unallocated --> ThreadLocalBlock: first stage_write allocates WalBlock
-    ThreadLocalBlock --> ActiveAppend: key/value bytes appended
-    ActiveAppend --> ReadyForFlush: payload full or metadata full
-    ReadyForFlush --> Harvested: harvest_ready_blocks queue swap
-    Harvested --> PendingIO: flush orchestration (Not verified: implementation)
-    PendingIO --> [*]
+graph TD
+  Writer --> Staging[WalStaging (thread-local)]
+  Staging -->|seal (finalize/partial_flush)| SealedBlock[Sealed Block]
+  SealedBlock --> IOEngine[PosixIoEngine / other]
+  IOEngine -->|writev + sync| Storage[SSD / HDD]
 ```
 
 ## Components
-### WalBlock<BlockSize>
+### GammaBlock (SSD-oriented)
 #### Responsibility
-Define physical block memory layout for WAL staging payload and metadata.
+Pack records, zero-pad to sector boundaries, compute a whole-block 128-bit `XXH3` hash in `finalize()`, and return a contiguous memory span for writing; because the header is updated at finalize, the implementation rewrites from offset `0` through the end of valid data so the header update reaches disk with the same write sequence.
 
 #### Why This Exists
-Durability and recovery logic need deterministic on-media framing independent of caller payload shape.
+Modern NVMe/SSD controllers and Linux block layers provide write atomicity properties for overlapping overwrites of small LBAs (the code comments call this "AWUPF" physics). This permits a layout that relies on whole-block re-writes without per-sector padding checks.
 
-#### How It Works
-- Header is cache-line aligned and fixed-size.
-- Tearing matrix size scales with block cache-line count and is cache-line padded.
-- VectorMetadata stores per-record opcodes and key lengths with fixed MAX_RECORDS.
-- Payload region consumes remaining bytes in block.
+#### How It Works (code facts)
+- `header.block_hash = XXH3_128bits(this, end_offset);` — compute final hash.  
+- `finalize()` returns a span starting at offset `0` to ensure the updated header (sector 0) is included in the write.  
+- `partial_flush()` aligns end to 4KiB and zero-pads the tail before returning a span starting at the previous flush offset.
 
 #### Concurrency Model
-WalBlock itself is not internally synchronized. Mutations occur through owning writer thread before handoff.
+Mutation occurs only in the producing writer thread until `finalize()`/handoff. After handoff the block is immutable from the staging point of view.
 
 #### Trade-offs
-Predictable binary layout and alignment guarantees, at the cost of fixed metadata capacity per block.
+- Pros: fewer per-sector metadata writes, compact final verification via a single 128-bit hash.  
+- Cons: requires the IO engine and device to safely handle overlapping overwrites; not safe on HDDs.
 
-### WalStaging<BlockSize>
+### DeltaBlock (HDD-oriented)
 #### Responsibility
-Stage incoming records into thread-local blocks and hand off completed blocks to flush pipeline.
+Pack records into sectors, reserve the last 4 bytes of each sector for a per-sector CRC32C, and ensure that before progressing to the next sector the CRC for the current sector is written. `finalize()` is implemented as a per-sector sealing operation.
 
 #### Why This Exists
-Write path should not block on immediate disk flush for every operation.
+Mechanical disks have strong constraints: partial-sector updates can corrupt checksums, and mechanical seeks dominate latency. Padded per-sector sealing lets the system avoid costly RMW of earlier sectors and ensures each sector has an independent checksum invariant.
 
-#### How It Works
-- Each staging instance gets unique instance_id up to MAX_DB_INSTANCES.
-- Each thread has thread-local state array indexed by instance_id.
-- stage_write creates thread-local TLAB lazily, allocates block on first use, appends key and value bytes, and updates header/metadata counters.
-- If payload capacity or record capacity is exceeded, current block is moved to ready queue and a new block is allocated.
-- harvest_ready_blocks swaps ready queue content into local vector for flush processing.
+#### How It Works (code facts)
+- On append, when `append_offset_ & SECTOR_MASK == CRC_OFFSET`, code computes `crc32c` over the sector payload and writes it into the reserved CRC slot.  
+- `partial_flush()` pads the incomplete sector, computes tail CRC via `utils::crc32c(...)`, writes the CRC into the sector, and advances `append_offset_` to the next sector boundary.  
+- `finalize()` simply invokes the same per-sector sealing logic.
 
 #### Concurrency Model
-- Writer append path is thread-local except ready-queue push.
-- Shared ready queue uses std::mutex.
-- Epoch read guard is acquired in stage_write scope.
+Same as GammaBlock — writer-local until handoff.
 
 #### Trade-offs
-Low write-path coordination overhead, but no durable guarantee until external flush pipeline consumes harvested blocks.
+- Pros: per-sector integrity, safe on HDDs without relying on overwrite atomicity; avoids needing to rewrite sector 0 just because header changed.  
+- Cons: per-sector CRCs consume extra bytes/capacity and require additional CPU for checksum computation.
 
-### WalManager Variant Dispatch
-#### Responsibility
-Select concrete WalStaging specialization based on configured block size constants.
+## XXH3 vs CRC32C — hardware rationale
+| Use | Algorithm | Reason |
+| --- | --- | --- |
+| Whole-block final integrity (SSD / GammaBlock) | `XXH3_128bits` | Fast non-cryptographic 128-bit hash with excellent speed on wide registers; cheap to compute for whole-block verification and stable across large contiguous overwrites. Implementation uses `xxhash.h` (`gamma_block.hpp`). |
+| Per-sector integrity (HDD / DeltaBlock) | `CRC32C` | CRC32C is native-friendly (hardware-accelerated on many CPUs via SSE/ARM CRC instructions), produces a small 32-bit checksum stored per-sector, and matches the requirement for lightweight per-sector verification in constrained sector-sized writes. Code uses `utils::crc32c(...)` (`delta_block.hpp`). |
 
-#### Why This Exists
-Compile-time block layouts are needed for alignment/static-assert guarantees while runtime config still chooses sector mode.
-
-#### How It Works
-WalManager stores std::variant of supported WalStaging specializations and forwards stage_write through std::visit.
-
-#### Concurrency Model
-Depends on selected staging instance behavior.
-
-#### Trade-offs
-Type-safe specialization set, but block-size choices are closed to declared variant alternatives.
-
-## Key Design Decisions
-| Decision | Why | Alternative Rejected | Trade-off |
-| --- | --- | --- | --- |
-| Templated WalBlock by BlockSize | Preserve compile-time layout invariants and alignment | One runtime-sized dynamic block struct | More template instantiations to maintain |
-| Thread-local staging state per instance | Keep hot write path mostly lock-free | Global shared current block | More per-thread memory footprint |
-| Mutex-protected ready queue | Simple correctness for producer handoff | Lock-free MPMC queue | Potential contention at very high producer rates |
-| Fixed MAX_RECORDS metadata arrays | Bounded metadata footprint and predictable parsing | Variable-length metadata blobs | Hard per-block record-count cap |
-| stage_write bool result | Fast failure signal for allocation/full-path issues | Exception-based write path | Less diagnostic detail in return value |
+Trade-off summary: `XXH3` gives a stronger (longer) catch-all end-to-end fingerprint for grouped sectors on devices that can atomically accept overlapping overwrites; `CRC32C` gives a cheap per-sector guard for devices where sector-level sealing is necessary and costly rewrites are unacceptable.
 
 ## Failure Modes
 | Scenario | Cause | Impact | Mitigation |
 | --- | --- | --- | --- |
-| Staging instance limit exceeded | instance_id >= MAX_DB_INSTANCES | Process termination | Bound instance count or raise configured limit in code |
-| stage_write returns false | TLAB or block allocation failure | Record not staged | Handle failure in caller and trigger pressure response |
-| Metadata capacity hit | num_records reaches MAX_RECORDS before payload full | Block sealed earlier than payload exhaustion | Keep record-size distribution in mind for flush cadence |
-| Payload capacity hit | key+value does not fit remaining payload bytes | Current block sealed and replaced | Ensure flush thread keeps up to reduce queue growth |
-| Data not persisted after harvest | IO path not implemented in this component | Durability gap | Implement flush_pipeline sink and recovery validation |
-| Unregistered epoch thread in stage_write | Epoch ReadGuard precondition violation | Assertion/termination in misuse paths | Ensure thread registration policy for WAL writers |
+| Header update requires rewrite on device not supporting safe overlapping overwrites | Using `GammaBlock.finalize()` on an HDD-like device | Corrupted checksum invariants or inconsistent header on disk | Ensure `WalManager` selects `DeltaBlock` when `is_rotational==true` (see `wal_manager.hpp`) or add detection checks in IO engine before handing the span to storage |
+| Checksum computation cost | High append rates leading to frequent per-sector CRCs | CPU pressure in writer thread | Move sealing work to background thread (compute+write) or use hardware-accelerated CRC routines where available |
+| Incorrect device probing | Wrong `hw_sector_size`/`is_rotational` detection | Wrong pipeline chosen (`GammaBlock` vs `DeltaBlock`) | Ensure robust device probing and conservative defaults (prefer `DeltaBlock` when unsure)
 
 ## Observability
-- Source files:
-  - include/stratadb/wal/wal_block.hpp
-  - include/stratadb/wal/wal_staging.hpp
-  - include/stratadb/wal/wal_manager.hpp
-  - src/wal/wal_staging.cpp
-- Primary signals:
-  - stage_write success/failure rate
-  - ready queue growth behavior
-  - harvest cadence
-- Not verified: runtime counters or tracing hooks for queue depth and flush latency are not currently exposed.
+- Code locations to inspect:  
+  - [include/stratadb/wal/gamma_block.hpp](include/stratadb/wal/gamma_block.hpp#L1-L240)  
+  - [include/stratadb/wal/delta_block.hpp](include/stratadb/wal/delta_block.hpp#L1-L240)  
+  - [include/stratadb/wal/wal_manager.hpp](include/stratadb/wal/wal_manager.hpp#L1-L200)  
+- Runtime signals to add or monitor: stage_write latency, per-block finalize duration (hash/crc compute), ready-queue length, IO engine writev/sync latency.
 
-## Validation / Test Matrix (Optional)
-| Scenario | Current Status | Notes |
+## Validation / Test Matrix
+| Scenario | How to validate | Code / test hint |
 | --- | --- | --- |
-| WalBlock layout invariants | Partially validated by static_asserts | compile-time checks exist for size/offset constraints |
-| Staging append correctness | Not verified | no dedicated WAL staging unit tests in current repository |
-| Harvest handoff correctness | Not verified | requires focused tests around queue behavior and lifecycle |
-| End-to-end durability | Not verified | flush pipeline and replay path are not documented as complete |
-
-## Performance Characteristics (Optional)
-| Path | Dominant Work | Notes |
-| --- | --- | --- |
-| stage_write hot path | memcpy + header metadata updates | Mostly thread-local until queue handoff |
-| Block rollover | Mutex push to ready queue + new block allocation | Sensitive to block-size fit and record size distribution |
-| harvest_ready_blocks | Mutex swap of vector | Cheap transfer primitive; downstream flush cost external |
+| GammaBlock finalize correctness | Create an in-memory block, append records, call `finalize()`, verify `header.block_hash` matches `XXH3_128bits` of the returned span | Unit test invoking `GammaBlock::finalize()` and `XXH3_128bits` over the returned span |
+| DeltaBlock sector sealing correctness | Append payload so that partial sector sealing is triggered, inspect written CRC slots for correct `crc32c` values | Unit test checking `utils::crc32c` and the contents of sector CRC fields after `partial_flush()` |
 
 ## Usage / Interaction
-| Step | Caller Action | Required Condition | Expected Outcome |
-| --- | --- | --- | --- |
-| 1 | Construct WalStaging/WalManager with EpochManager and staging Arena | Valid subsystem lifetimes | WAL staging object ready |
-| 2 | Register writer threads with EpochManager | Before stage_write use | ReadGuard preconditions satisfied |
-| 3 | Call stage_write for each mutation | Sufficient Arena capacity | Record appended or explicit false result |
-| 4 | Run harvest_ready_blocks in flush thread | Completed blocks accumulated | Ready blocks transferred for flush handling |
-| 5 | Persist harvested blocks | Not verified: implementation pending | Durable WAL behavior once implemented |
-
-## Related Documents
-- [00-build-and-toolchain.md](00-build-and-toolchain.md)
-- [01-epoch-reclamation.md](01-epoch-reclamation.md)
-- [03-memory-arena.md](03-memory-arena.md)
-- [04-thread-local-allocation.md](04-thread-local-allocation.md)
+- Choice of pipeline: `WalManager` auto-selects `Ssd4kPipeline`, `Ssd16kPipeline`, or `Hdd4kPipeline` based on `is_rotational` and `hw_sector_size` (`wal_manager.hpp`).  
+- Staging only seals blocks — ensure the flush pipeline (IO engine + durable sync) is implemented and verified before assuming durability.
 
 ## Notes
-- Not verified: final durability semantics because disk flush pipeline and recovery integration are incomplete in current code.
-- Not verified: contention profile of ready queue under high multi-writer load.
-- Not verified: relationship between WalConfig target flush latency and current runtime behavior.
+- Not verified: end-to-end durability until flush pipeline integration and sync semantics are exercised by system tests.  
+- Not verified: the precise interaction with device write caches and enterprise NVMe guarantees on every platform; see `docs/architecture/08-io-engine-physics.md` for the IO engine and OS-level sync considerations.
+- Tearing matrix size scales with block cache-line count and is cache-line padded.
+
