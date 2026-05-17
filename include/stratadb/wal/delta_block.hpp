@@ -121,7 +121,8 @@ struct alignas(4096) DeltaBlock {
         return {span, start_offset};
     }
 
-    [[nodiscard]] auto finalize() noexcept -> FlushResult {
+    [[nodiscard]] auto finalize(std::uint64_t seq) noexcept -> FlushResult {
+        // init(seq);
         // Because DeltaBlock uses per-sector checksums, sealing the block is identical
         // to doing a partial flush of the remaining unwritten data.
         return partial_flush();
