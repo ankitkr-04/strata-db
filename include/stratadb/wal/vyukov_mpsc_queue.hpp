@@ -1,18 +1,13 @@
 #pragma once
 
 #include "stratadb/utils/hardware.hpp"
+#include "stratadb/wal/wal_concept.hpp"
 
 #include <atomic>
 #include <cstddef>
 #include <type_traits>
 
 namespace stratadb::wal {
-
-// The intrusive base class. Any payload (like FlushResult or GammaBlock)
-// that needs to be passed through the queue must inherit from this or wrap it.
-struct MpscNode {
-    std::atomic<MpscNode*> next{nullptr};
-};
 
 // Vyukov's Intrusive Lock-Free MPSC Queue.
 // - Producers: Wait-Free (Guaranteed to complete in bounded steps via XCHG).

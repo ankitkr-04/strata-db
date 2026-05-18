@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
@@ -7,8 +8,14 @@
 
 namespace stratadb::wal {
 
+// The intrusive base class. Any payload (like FlushResult or GammaBlock)
+// that needs to be passed through the queue must inherit from this or wrap it.
+struct MpscNode {
+    std::atomic<MpscNode*> next{nullptr};
+};
+
 // Represents the state of a partial flush for O_DIRECT RMW
-struct FlushResult {
+struct FlushResult : public MpscNode {
     std::span<const std::byte> memory_to_write;
     std::size_t block_internal_offset;
 };
