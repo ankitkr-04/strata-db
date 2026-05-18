@@ -4,11 +4,15 @@ Author: Ankit Kumar
 Date: 2026-04-27
 
 ## Last Updated
-2026-05-17
+2026-05-18
 
 ## Change Summary
 - 2026-04-27: Original WAL staging draft (basic staging & handoff).  
 - 2026-05-17: Rewrote to clarify the critical distinction "Block Sealing ≠ Block Flushing", document `GammaBlock` (SSD-oriented) vs `DeltaBlock` (HDD-oriented) layouts, and justify `XXH3` vs `CRC32C` selection. Aligned claims to source code where possible.
+- 2026-05-18: Overhauled block physics for `O_DIRECT` compatibility and eliminated per-record if/else overhead. Added:
+  - The 2D Template Matrix explanation showing how `WalPipeline<Layout, Queue>` + `std::visit` produce batch-level dispatch with zero virtual-call overhead on the hot path.
+  - `FlushResult` semantics and how `partial_flush()` / `finalize()` map to sector-aligned write spans for the I/O engine.
+  - A focused description of divergent device physics: why `GammaBlock` relies on overlapping overwrites (SSD) and `DeltaBlock` uses padded per-sector sealing (HDD).
 
 ## Purpose
 Explain the in-memory WAL staging semantics that matter for correctness and durability, focusing on the recent break-through: sealing a block for handoff is not the same as flushing it to durable media. Document the two concrete block layouts (`GammaBlock` and `DeltaBlock`) and why they exist.
@@ -38,6 +42,32 @@ How it works (summary):
 - Staging appends records into a thread-local block until append fails.  
 - `partial_flush()` and `finalize()` produce `FlushResult` describing a sector-aligned span to give to the IO engine.  
 - The IO engine performs the writev/pwritev and then calls the appropriate sync/truncate/fdatasync semantics to guarantee durability.
+
+### The 2D Template Matrix (Batch-Level Dispatch)
+
+What: The staging subsystem implements a 2D compile-time matrix of implementations: `WalPipeline<Layout, Queue>` is a template over two orthogonal axes — the physical `Layout` (e.g., `GammaBlock`, `DeltaBlock`) and the concurrency `Queue` implementation (e.g., a Vyukov MPSC queue or an SPSC mailbox).
+
+Why: Encoding these orthogonal choices as template parameters produces a family of fully inlined, zero-virtual functions for the hot path (`stage_write`) while still allowing the runtime to pick the single correct pipeline instance once per batch.
+
+How it works: `WalManager` constructs exactly one concrete pipeline type (one cell of the 2D matrix) based on device probing and configuration. At runtime `WalManager` stores that concrete pipeline inside a `std::variant` (`StagingVariant` in `wal_manager.hpp`) and uses `std::visit` to resolve the variant once per batch in `write_batch()`. Inside the `std::visit` callback the compiler sees a concrete `WalPipeline<Layout, Queue>` type and can inline `stage_write` across the loop of records, eliminating virtual calls and branching inside the hot record-append path.
+
+Trade-offs: `std::variant` resolution costs a single type-dispatch per batch (or per `write_batch()` invocation) instead of per-record overhead. This shifts the dispatch cost to batch boundaries and keeps the inner loop extremely cheap. The downside is increased binary code size due to template instantiations for each matrix cell.
+
+See: [include/stratadb/wal/wal_pipeline.hpp](include/stratadb/wal/wal_pipeline.hpp) and [include/stratadb/wal/wal_manager.hpp](include/stratadb/wal/wal_manager.hpp).
+
+### Partial Flushes and `FlushResult`
+
+What: `FlushResult` is the small value-type that `WALBlockLayout` implementations return from `partial_flush()` and `finalize()` to describe exactly what the IO engine must write.
+
+Structure (from `wal_concept.hpp`):
+- `std::span<const std::byte> memory_to_write` — a contiguous, sector-aligned view of the block memory region that should be submitted to the I/O engine (typically used directly with `writev`/`pwritev`).
+- `std::size_t block_internal_offset` — the offset (in bytes) inside the physical block where `memory_to_write` starts. The IO engine can use this to determine where in the logical block the write applies and how to compose multi-span writes.
+
+Why: Explicitly returning the span plus the offset decouples the staging logic from the IO engine's write strategy: the block is free to return any contiguous, properly padded span that satisfies device alignment and verification invariants (whole-block rewrite for `GammaBlock`, per-sector sealed spans for `DeltaBlock`).
+
+How: `partial_flush()` advances internal `flush_offset_` and returns the span between the previous `flush_offset_` and the new `append`-aligned end. `finalize()` returns the final sealed span (for `GammaBlock` this starts at offset 0 because the header is updated). The IO engine then consumes `FlushResult.memory_to_write` and must ensure durability semantics (fdatasync/fsync or suitable device-specific barriers) as required by the higher-level policy.
+
+Not verified: exact IO engine uses of `block_internal_offset` across platforms — see `docs/architecture/08-io-engine-physics.md` for IO-engine contract notes.
 
 ## Data Flow (high level)
 ```mermaid
