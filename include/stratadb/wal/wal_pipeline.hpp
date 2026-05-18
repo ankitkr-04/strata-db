@@ -32,5 +32,5 @@ class WalPipeline {
   private:
     Queue handoff_queue_;
 };
-};
-} // namespace stratadb::wal
+}; // namespace stratadb::wal
+// namespace stratadb::wal
