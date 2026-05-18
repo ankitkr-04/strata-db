@@ -71,4 +71,35 @@ class alignas(utils::CACHE_LINE_SIZE) SpscRingBuffer {
     MpscNode* buffer_[Capacity]{};
 };
 
+class SpscMailboxQueue {
+  public:
+    SpscMailboxQueue() = default;
+
+    void push(MpscNode* node) noexcept {
+        const std::size_t index = get_dense_thread_index() % utils::MAX_SUPPORTED_THREADS;
+        while (!mailboxes_[index].try_push(node)) {
+            cpu_relax();
+        }
+    }
+
+    // The Flusher thread calls this to sweep the mailboxes.
+    [[nodiscard]] auto pop() noexcept -> MpscNode* {
+        for (std::size_t i = 0; i < utils::MAX_SUPPORTED_THREADS; ++i) {
+            const std::size_t index = (current_sweep_index_ + i) % utils::MAX_SUPPORTED_THREADS;
+            if (auto* node = mailboxes_[index].try_pop()) {
+                current_sweep_index_ =
+                    (index + 1) % utils::MAX_SUPPORTED_THREADS; // Start next sweep after this mailbox
+                return node;
+            }
+        }
+        return nullptr; // No messages in any mailbox
+    }
+
+  private:
+    // Array of 256 physically isolated ring buffers
+    SpscRingBuffer<256> mailboxes_[utils::MAX_SUPPORTED_THREADS];
+
+    // Consumer-only state (doesn't need atomic because only Flusher touches it)
+    std::size_t current_sweep_index_{0};
+};
 } // namespace stratadb::wal
