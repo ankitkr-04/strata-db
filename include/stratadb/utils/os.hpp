@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 
 namespace stratadb::utils::os {
 
@@ -25,5 +26,7 @@ void close_fd(int fd) noexcept;
 // Parses Linux /sys/devices/system/cpu/isolated to check if a core is completely
 // hidden from the standard kernel scheduler (required for zero-latency SPSC busy-polling).
 [[nodiscard]] auto is_core_isolated(std::uint32_t core_id) noexcept -> bool;
+
+[[nodiscard]] auto auto_discover_isolated_core() noexcept -> std::optional<std::uint32_t>;
 
 } // namespace stratadb::utils::os

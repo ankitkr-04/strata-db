@@ -71,6 +71,47 @@ inline auto is_isolated_impl(std::uint32_t target_core) noexcept -> bool {
     }
     return false;
 }
+
+inline auto auto_discover_isolated_core_impl() noexcept -> std::optional<std::uint32_t> {
+    std::ifstream file("/sys/devices/system/cpu/isolated");
+    if (!file.is_open())
+        return std::nullopt;
+
+    std::string line;
+    if (!std::getline(file, line) || line.empty())
+        return std::nullopt;
+
+    std::stringstream ss(line);
+    std::string token;
+    std::uint32_t best_core = 0;
+    bool found = false;
+
+    while (std::getline(ss, token, ',')) {
+        auto dash_pos = token.find('-');
+        if (dash_pos != std::string::npos) {
+            try {
+                auto end = static_cast<std::uint32_t>(std::stoul(token.substr(dash_pos + 1)));
+                best_core = std::max(best_core, end);
+                found = true;
+            } catch (...) {
+                continue;
+            }
+        } else {
+            try {
+                auto core = static_cast<std::uint32_t>(std::stoul(token));
+                best_core = std::max(best_core, core);
+                found = true;
+
+            } catch (...) {
+                continue;
+            }
+        }
+    }
+
+    if (found && best_core > 0)
+        return best_core;
+    return std::nullopt;
+}
 #elif defined(__APPLE__)
 inline auto sync_data_impl(int fd) noexcept -> bool {
     // macOS fsync/fdatasync does NOT flush the hardware write cache.
@@ -86,6 +127,9 @@ inline auto sync_data_impl(int fd) noexcept -> bool {
     }
     inline auto is_isolated_impl(std::uint32_t /*target_core*/) noexcept -> bool {
         return false;
+    }
+    inline auto auto_discover_isolated_core_impl() noexcept -> std::optional<std::uint32_t> {
+        return std::nullopt;
     }
 }
 #else
@@ -103,6 +147,9 @@ inline auto elevate_rt_impl() noexcept -> bool {
 }
 inline auto is_isolated_impl(std::uint32_t /*target_core*/) noexcept -> bool {
     return false;
+}
+inline auto auto_discover_isolated_core_impl() noexcept -> std::optional<std::uint32_t> {
+    return std::nullopt;
 }
 #endif
 
