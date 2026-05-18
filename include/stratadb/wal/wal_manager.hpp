@@ -7,6 +7,9 @@
 #include "stratadb/utils/os.hpp"
 #include "stratadb/wal/delta_block.hpp"
 #include "stratadb/wal/gamma_block.hpp"
+#include "stratadb/wal/spsc_mailbox_queue.hpp"
+#include "stratadb/wal/vyukov_mpsc_queue.hpp"
+#include "stratadb/wal/wal_concept.hpp"
 #include "stratadb/wal/wal_pipeline.hpp"
 
 #include <span>
@@ -17,13 +20,6 @@
 
 namespace stratadb::wal {
 
-// --- STUB QUEUES (To be implemented next) ---
-struct SpscMailboxQueue {
-    void enqueue(void*) {}
-};
-struct VyukovMpscQueue {
-    void enqueue(void*) {}
-};
 static_assert(ConcurrencyQueue<SpscMailboxQueue>);
 static_assert(ConcurrencyQueue<VyukovMpscQueue>);
 
@@ -69,19 +65,19 @@ class WalManager {
         // 4. Instantiate the correct lock-free template pipeline
         if (caps_.is_rotational) {
             if (use_spsc)
-                pipeline_ = Hdd4kSpscPipeline{};
+                pipeline_.emplace<Hdd4kSpscPipeline>();
             else
-                pipeline_ = Hdd4kMpscPipeline{};
+                pipeline_.emplace<Hdd4kMpscPipeline>();
         } else if (caps_.physical_sector_size == 16384) {
             if (use_spsc)
-                pipeline_ = Ssd16kSpscPipeline{};
+                pipeline_.emplace<Ssd16kSpscPipeline>();
             else
-                pipeline_ = Ssd16kMpscPipeline{};
+                pipeline_.emplace<Ssd16kMpscPipeline>();
         } else {
             if (use_spsc)
-                pipeline_ = Ssd4kSpscPipeline{};
+                pipeline_.emplace<Ssd4kSpscPipeline>();
             else
-                pipeline_ = Ssd4kMpscPipeline{};
+                pipeline_.emplace<Ssd4kMpscPipeline>();
         }
     }
 

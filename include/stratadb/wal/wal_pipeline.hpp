@@ -8,10 +8,10 @@
 namespace stratadb::wal {
 
 template <typename T>
-concept ConcurrencyQueue = requires(T q) {
-    { q.enqueue(nullptr) } -> std::same_as<void>; // we will work later
+concept ConcurrencyQueue = requires(T q, MpscNode* node) {
+    { q.push(node) } -> std::same_as<void>;
+    { q.pop() } -> std::same_as<MpscNode*>;
 };
-
 template <WALBlockLayout Layout, ConcurrencyQueue Queue>
 class WalPipeline {
   public:
