@@ -10,6 +10,11 @@ namespace stratadb::config {
 using namespace stratadb::utils::bytes::literals;
 using namespace std::chrono_literals;
 
+enum class SpscMode : std::uint8_t {
+    Disabled,      // Standard Vyukov MPSC queue. No core pinning.
+    AutoDiscover,  // StrataDB finds the highest isolated core automatically.
+    ManualOverride // User explicitly defines the core in `manual_core_id`.
+};
 struct WalConfig {
 
     // How much data WAL can stage in the BlockPool before blocking writers.
@@ -28,10 +33,10 @@ struct WalConfig {
     std::chrono::microseconds target_flush_latency{50us};
 
     // --- CONCURRENCY & SCHEDULING (The Fast Path) ---
-    // OPT-IN: If set, StrataDB will attempt to seize this specific physical core,
-    // pin the Flusher to it, and deploy the Zero-Latency SPSC Mailbox architecture.
-    // If nullopt, safely defaults to Vyukov Intrusive MPSC.
-    std::optional<std::uint32_t> dedicated_flusher_core_id{std::nullopt};
+    SpscMode spsc_mode{SpscMode::Disabled};
+
+    // ONLY used if spsc_mode == SpscMode::ManualOverride
+    std::optional<std::uint32_t> manual_core_id{std::nullopt};
 
     // Attempt to elevate the Flusher to Real-Time priority (requires CAP_SYS_NICE).
     bool request_realtime_priority{true};
