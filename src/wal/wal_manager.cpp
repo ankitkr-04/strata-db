@@ -1,0 +1,1 @@
+#include "stratadb/wal/wal_manager.hpp"

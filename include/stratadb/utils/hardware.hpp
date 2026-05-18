@@ -23,7 +23,7 @@ inline constexpr std::size_t MAX_SUPPORTED_THREADS = 256;
 inline constexpr std::size_t MAX_DB_INSTANCES = 64;
 
 // Probes the OS for the disk's physical sector size (AWUPF).
-[[nodiscard]] auto probe_io_capabilites(int fd) noexcept -> io::IOCapabilities;
+[[nodiscard]] auto probe_io_capabilities(int fd) noexcept -> io::IOCapabilities;
 
 // Probes the OS for the memory management page size (4K vs 16K vs 64K).
 [[nodiscard]] auto system_page_size() noexcept -> std::size_t;
