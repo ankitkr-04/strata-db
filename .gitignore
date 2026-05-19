@@ -52,3 +52,6 @@ compile_commands.json
 #agents
 .agents/
 .codex
+
+#private 
+private/
