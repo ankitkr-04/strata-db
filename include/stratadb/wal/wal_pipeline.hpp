@@ -83,6 +83,7 @@ class WalPipeline {
         auto* queue_node = new (memory.data()) FlushResult{
             .memory_to_write = result.memory_to_write,
             .block_internal_offset = result.block_internal_offset,
+            .max_lsn = result.max_lsn,
         };
 
         // pass the chunk via 8-byte base class pointer

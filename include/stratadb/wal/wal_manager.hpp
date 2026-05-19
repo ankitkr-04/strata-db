@@ -58,28 +58,40 @@ class WalManager {
         caps_(utils::probe_io_capabilities(fd_.get()))
         ,
         // 2. Init the IO Engine with the exact physical capabilities
-        engine_(caps_) {
+        engine_(caps_)
+        , pipeline_(std::in_place_type<Ssd4kMpscPipeline>,
+                    pool_,
+                    lsn_generator_) // Temporary default, will be replaced in the constructor body
+    {
         // 3. Compute Effective Config (Degrading safely if OS lacks requirements)
         const bool use_spsc = compute_effective_config();
 
         // 4. Instantiate the correct lock-free template pipeline
         if (caps_.is_rotational) {
             if (use_spsc)
-                pipeline_.emplace<Hdd4kSpscPipeline>();
+                pipeline_.emplace<Hdd4kSpscPipeline>(pool_, lsn_generator_);
             else
-                pipeline_.emplace<Hdd4kMpscPipeline>();
+                pipeline_.emplace<Hdd4kMpscPipeline>(pool_, lsn_generator_);
         } else if (caps_.physical_sector_size == 16384) {
             if (use_spsc)
-                pipeline_.emplace<Ssd16kSpscPipeline>();
+                pipeline_.emplace<Ssd16kSpscPipeline>(pool_, lsn_generator_);
             else
-                pipeline_.emplace<Ssd16kMpscPipeline>();
+                pipeline_.emplace<Ssd16kMpscPipeline>(pool_, lsn_generator_);
         } else {
             if (use_spsc)
-                pipeline_.emplace<Ssd4kSpscPipeline>();
+                pipeline_.emplace<Ssd4kSpscPipeline>(pool_, lsn_generator_);
             else
-                pipeline_.emplace<Ssd4kMpscPipeline>();
+                pipeline_.emplace<Ssd4kMpscPipeline>(pool_, lsn_generator_);
         }
     }
+
+    ~WalManager();
+
+    // Disable copying and moving: resource ownership (fd, thread) is unique.
+    WalManager(const WalManager&) = delete;
+    WalManager& operator=(const WalManager&) = delete;
+    WalManager(WalManager&&) = delete;
+    WalManager& operator=(WalManager&&) = delete;
 
     // Allows the system or user to query what architecture actually loaded.
     [[nodiscard]] auto get_effective_config() const noexcept -> const config::WalConfig& {
@@ -102,6 +114,8 @@ class WalManager {
             pipeline_);
     }
 
+    void start_flusher();
+
   private:
     config::WalConfig requested_config_;
     config::WalConfig effective_config_; // Represents runtime reality
@@ -110,6 +124,18 @@ class WalManager {
     io::IOCapabilities caps_;
     io::PosixIoEngine engine_;
     StagingVariant pipeline_;
+    std::atomic<uint64_t> durable_lsn_{
+        0}; // The highest LSN that has been durably flushed. Updated by the Flusher thread after each successful write.
+    memory::BlockPool pool_;
+    alignas(utils::CACHE_LINE_SIZE) std::atomic<uint64_t> lsn_generator_{1};
+    std::atomic<uint64_t> current_file_offset_{0};
+
+    // Background Thread State
+    std::atomic<bool> stop_requested_{false};
+    std::jthread flusher_thread_;
+
+    // Declare the flusher loop function
+    void flusher_loop();
 
     // Evaluates constraints, updates effective_config_, and returns true if SPSC is safe.
     [[nodiscard]] auto compute_effective_config() noexcept -> bool {
