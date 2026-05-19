@@ -118,7 +118,9 @@ struct alignas(4096) DeltaBlock {
 
         flush_offset_ = append_offset_;
 
-        return FlushResult{.memory_to_write = span, .block_internal_offset = start_offset};
+        return FlushResult{.memory_to_write = span,
+                           .block_internal_offset = start_offset,
+                           .max_lsn = header.sequence_number};
     }
 
     [[nodiscard]] auto finalize(std::uint64_t seq) noexcept -> FlushResult {

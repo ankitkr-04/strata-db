@@ -96,7 +96,9 @@ struct alignas(4096) GammaBlock {
         // The hardware AWUPF guarantees it won't tear.
         flush_offset_ = append_offset_ & ~4095ULL;
 
-        return FlushResult{.memory_to_write = span, .block_internal_offset = start_offset};
+        return FlushResult{.memory_to_write = span,
+                           .block_internal_offset = start_offset,
+                           .max_lsn = header.sequence_number};
     }
 
     // called by the producer thread when the block is full or needs to be sealed for I/O handoff
@@ -119,7 +121,7 @@ struct alignas(4096) GammaBlock {
                                                end_offset - start_offset);
 
         flush_offset_ = end_offset;
-        return FlushResult{.memory_to_write = span, .block_internal_offset = start_offset};
+        return FlushResult{.memory_to_write = span, .block_internal_offset = start_offset, .max_lsn = seq_num};
     }
 };
 
