@@ -123,7 +123,7 @@ struct alignas(4096) DeltaBlock {
                            .max_lsn = header.sequence_number};
     }
 
-    [[nodiscard]] auto finalize(std::uint64_t seq) noexcept -> FlushResult {
+    [[nodiscard]] auto finalize(std::uint64_t /*seq*/) noexcept -> FlushResult {
         // init(seq);
         // Because DeltaBlock uses per-sector checksums, sealing the block is identical
         // to doing a partial flush of the remaining unwritten data.

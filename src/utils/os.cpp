@@ -167,6 +167,10 @@ auto is_core_isolated(std::uint32_t core_id) noexcept -> bool {
     return detail::is_isolated_impl(core_id);
 }
 
+auto auto_discover_isolated_core() noexcept -> std::optional<std::uint32_t> {
+    return detail::auto_discover_isolated_core_impl();
+}
+
 auto sync_data(int fd) noexcept -> bool {
     if (fd < 0)
         return false;

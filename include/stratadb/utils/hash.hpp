@@ -6,7 +6,11 @@
 #include <nmmintrin.h>
 
 namespace stratadb::utils {
-[[nodiscard]] inline auto crc32c(const void* data, size_t length) noexcept -> uint32_t {
+[[nodiscard]]
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((target("sse4.2,crc32")))
+#endif
+inline auto crc32c(const void* data, size_t length) noexcept -> uint32_t {
     const auto* ptr = static_cast<const uint8_t*>(data);
     uint32_t crc = 0xFFFFFFFF;
 

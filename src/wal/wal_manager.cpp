@@ -13,8 +13,9 @@ WalManager::~WalManager() {
     std::visit(
         [](auto& active_pipeline) {
             // Push a fast, empty dummy node to trigger the futex wake
-            static FlushResult dummy_node{};
-            active_pipeline.stage_write({}, {}); // or manually active_pipeline.push(&dummy_node) if exposed
+            // Note: Utilizing an empty stage_write serves as our dummy payload 
+            // since exposing a direct intrusive node push violates abstraction here.
+            active_pipeline.stage_write({}, {}); 
         },
         pipeline_);
 
