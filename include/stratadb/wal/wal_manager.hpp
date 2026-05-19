@@ -113,6 +113,15 @@ class WalManager {
             },
             pipeline_);
     }
+    // Called by user threads after write_batch() if they need synchronous ACID guarantees
+    void wait_for_durable(uint64_t target_lsn) noexcept {
+        uint64_t current = durable_lsn_.load(std::memory_order_acquire);
+        while (current < target_lsn) {
+            // C++20 futex sleep: sleep until durable_lsn_ changes from 'current'
+            durable_lsn_.wait(current, std::memory_order_acquire);
+            current = durable_lsn_.load(std::memory_order_acquire);
+        }
+    }
 
     void start_flusher();
 
