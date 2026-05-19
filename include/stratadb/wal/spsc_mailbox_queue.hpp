@@ -95,6 +95,10 @@ class SpscMailboxQueue {
         return nullptr; // No messages in any mailbox
     }
 
+    void wait_for_work() noexcept {
+        cpu_relax(); // just relax the CPU while waiting for work. The Flusher thread can call this in a loop when idle.
+    }
+
   private:
     // Array of 256 physically isolated ring buffers
     SpscRingBuffer<256> mailboxes_[utils::MAX_SUPPORTED_THREADS];

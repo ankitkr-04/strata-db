@@ -14,6 +14,13 @@ struct MpscNode {
     std::atomic<MpscNode*> next{nullptr};
 };
 
+template <typename T>
+concept ConcurrencyQueue = requires(T q, MpscNode* node) {
+    { q.push(node) } -> std::same_as<void>;
+    { q.pop() } -> std::same_as<MpscNode*>;
+    { q.wait_for_work() } -> std::same_as<void>;
+};
+
 // Represents the state of a partial flush for O_DIRECT RMW
 struct FlushResult : public MpscNode {
     std::span<const std::byte> memory_to_write;
