@@ -44,13 +44,18 @@ TEST(WalManagerTest, BasicWriteBatch) {
     wal.start_flusher();
 
     WriteBatch batch;
-    batch.emplace_back("hello", "world");
+    std::string large_value(5000, 'X');
+    batch.emplace_back("hello", large_value);
     batch.emplace_back("key2", "value2");
 
     wal.write_batch(batch);
 
+    wal.flush();
+
     // Batch written. wait_for_durable on LSN 1.
     // LSN calculation depends on total updates. Mpsc pipeline increments it.
+    // Since we forced an allocation and a dispatch (5000 bytes > 4096 bytes block size),
+    // at least LSN 1 will be durably synced.
     wal.wait_for_durable(1);
 
     off_t size = lseek(fd, 0, SEEK_END);
@@ -90,12 +95,16 @@ TEST(WalManagerTest, ConcurrentGroupCommit) {
     for (int i = 0; i < NUM_THREADS; ++i) {
         threads.emplace_back([&wal, i]() -> void {
             WriteBatch batch;
-            batch.emplace_back("thread" + std::to_string(i), "data");
+            std::string large_value(5000, 'Y');
+            batch.emplace_back("thread" + std::to_string(i), large_value);
             wal.write_batch(batch);
         });
     }
 
     threads.clear(); // Waits for all pushing threads to complete
+
+    wal.flush();
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
     // We expect some positive LSN. We can't know the exact LSN each thread got without
     // WalManager returning it, so we simply verify that it stops cleanly.

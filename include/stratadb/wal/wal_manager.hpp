@@ -125,6 +125,11 @@ class WalManager {
 
     void start_flusher();
 
+    // Forces all partially filled blocks to the Flusher (Solves the Stalled Writer Trap)
+    void flush() noexcept {
+        std::visit([](auto& active_pipeline) { active_pipeline.flush_pipeline(); }, pipeline_);
+    }
+
   private:
     config::WalConfig requested_config_;
     config::WalConfig effective_config_; // Represents runtime reality

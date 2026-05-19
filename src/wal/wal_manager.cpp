@@ -11,11 +11,8 @@ WalManager::~WalManager() {
     // Wake up the Vyukov queue if it was sleeping by pushing a dummy node.
     // The flusher will wake up, see the dummy node (or see stop_requested_), and exit.
     std::visit(
-        [](auto& active_pipeline) {
-            // Push a fast, empty dummy node to trigger the futex wake
-            // Note: Utilizing an empty stage_write serves as our dummy payload 
-            // since exposing a direct intrusive node push violates abstraction here.
-            active_pipeline.stage_write({}, {}); 
+        [](auto& active_pipeline) -> auto {
+            active_pipeline.flush_pipeline();
         },
         pipeline_);
 

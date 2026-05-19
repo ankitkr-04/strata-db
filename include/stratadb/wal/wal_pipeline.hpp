@@ -46,6 +46,22 @@ class WalPipeline {
         handoff_queue_.wait_for_work();
     }
 
+    void flush_pipeline() noexcept {
+        // 1. Forcefully seal and dispatch ALL active thread-local blocks 
+        // (This simulates the Micro-Batching Timeout for our tests)
+        for (std::size_t i = 0; i < utils::MAX_SUPPORTED_THREADS; ++i) {
+            if (!active_blocks_[i].empty()) {
+                seal_and_dispatch(i);
+            }
+        }
+
+        // 2. Push an empty dummy node to unconditionally wake the Flusher thread
+        static FlushResult dummy_node{};
+        dummy_node.memory_to_write = {};
+        dummy_node.max_lsn = 0; // 0 means ignore
+        handoff_queue_.push(&dummy_node);
+    }
+
   private:
     Queue handoff_queue_;
     memory::BlockPool& pool_;
