@@ -47,14 +47,14 @@ class VyukovMpscQueue {
     }
 
     // --- CONSUMER HOT PATH (Executed by 1 Flusher Thread) ---
-    [[nodiscard]] auto pop() noexcept -> MpscNode* {
+    [[nodiscard]] auto pop() noexcept -> PopResultData {
         MpscNode* head = head_.load(std::memory_order_relaxed);
         MpscNode* next = head->next.load(std::memory_order_acquire);
 
         // Case 1: Queue is genuinely empty
         if (head == tail_.load(std::memory_order_relaxed)) {
             if (next == nullptr) {
-                return nullptr; // Empty
+                return {.payload_node = nullptr, .node_to_free = nullptr}; // Empty
             }
             // Edge Case: ProducerStalled!
             // A producer swapped the tail but hasn't updated `prev->next` yet.
@@ -67,17 +67,13 @@ class VyukovMpscQueue {
             head_.store(next, std::memory_order_relaxed);
 
             // We return the OLD head (which was the dummy, but now holds the
-            // payload of the previously popped item, or is empty if it's the stub).
-            // NOTE: The caller extracts the data from `next`, but mathematically
-            // we return `head` so it can be recycled.
-            // For simplicity in StrataDB, we actually return `next` and transfer
-            // ownership, keeping the memory alive.
-            return next;
+            // memory that can be recycled) AND the NEW head (which holds the payload).
+            return {.payload_node = next, .node_to_free = head};
         }
 
         // Case 3: Producer is stalled mid-instruction. Spin to yield CPU.
         // This is a nanosecond-scale race condition.
-        return nullptr;
+        return {.payload_node = nullptr, .node_to_free = nullptr};
     }
 
     // --- CONSUMER POWER MANAGEMENT ---

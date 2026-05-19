@@ -83,16 +83,17 @@ class SpscMailboxQueue {
     }
 
     // The Flusher thread calls this to sweep the mailboxes.
-    [[nodiscard]] auto pop() noexcept -> MpscNode* {
+    [[nodiscard]] auto pop() noexcept -> PopResultData {
         for (std::size_t i = 0; i < utils::MAX_SUPPORTED_THREADS; ++i) {
             const std::size_t index = (current_sweep_index_ + i) % utils::MAX_SUPPORTED_THREADS;
             if (auto* node = mailboxes_[index].try_pop()) {
                 current_sweep_index_ =
                     (index + 1) % utils::MAX_SUPPORTED_THREADS; // Start next sweep after this mailbox
-                return node;
+                // For a ring buffer, the node memory itself is the payload AND the memory to free
+                return {node, node};
             }
         }
-        return nullptr; // No messages in any mailbox
+        return {nullptr, nullptr}; // No messages in any mailbox
     }
 
     void wait_for_work() noexcept {

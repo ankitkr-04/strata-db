@@ -14,10 +14,15 @@ struct MpscNode {
     std::atomic<MpscNode*> next{nullptr};
 };
 
+struct PopResultData {
+    MpscNode* payload_node;
+    MpscNode* node_to_free; // The memory that is now safely disconnected and ready for recycling
+};
+
 template <typename T>
 concept ConcurrencyQueue = requires(T q, MpscNode* node) {
     { q.push(node) } -> std::same_as<void>;
-    { q.pop() } -> std::same_as<MpscNode*>;
+    { q.pop() } -> std::same_as<PopResultData>;
     { q.wait_for_work() } -> std::same_as<void>;
 };
 

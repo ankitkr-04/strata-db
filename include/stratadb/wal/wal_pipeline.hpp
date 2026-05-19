@@ -38,8 +38,8 @@ class WalPipeline {
         return true;
     }
 
-    [[nodiscard]] auto pop_ready_block() noexcept -> FlushResult* {
-        return static_cast<FlushResult*>(handoff_queue_.pop());
+    [[nodiscard]] auto pop_ready_block() noexcept -> PopResultData {
+        return handoff_queue_.pop();
     }
 
     void wait_for_work() noexcept {
@@ -47,7 +47,7 @@ class WalPipeline {
     }
 
     void flush_pipeline() noexcept {
-        // 1. Forcefully seal and dispatch ALL active thread-local blocks 
+        // 1. Forcefully seal and dispatch ALL active thread-local blocks
         // (This simulates the Micro-Batching Timeout for our tests)
         for (std::size_t i = 0; i < utils::MAX_SUPPORTED_THREADS; ++i) {
             if (!active_blocks_[i].empty()) {
