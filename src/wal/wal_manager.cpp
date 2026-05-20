@@ -10,9 +10,8 @@ WalManager::~WalManager() {
 
     // Wake up the Vyukov queue if it was sleeping by pushing a dummy node.
     // The flusher will wake up, see the dummy node (or see stop_requested_), and exit.
-    // std::visit([](auto& active_pipeline) -> auto { active_pipeline.flush_pipeline(); }, pipeline_);
+    std::visit([](auto& active_pipeline) -> auto { active_pipeline.flush_pipeline(); }, pipeline_);
 
-    stop_requested_.store(true, std::memory_order_release);
     stop_requested_.notify_all();
     // jthread automatically joins here
 }

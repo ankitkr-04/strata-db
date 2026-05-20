@@ -77,23 +77,23 @@ class VyukovMpscQueue {
         return {.payload_node = nullptr, .node_to_free = nullptr};
     }
 
+    
     // --- CONSUMER POWER MANAGEMENT ---
     // Called by the flusher when `pop()` returns nullptr.
     void wait_for_work(std::atomic<bool>& stop_requested) noexcept {
-        stop_requested.wait(false, std::memory_order_acquire); // Wait until stop is requested or a producer pushes work
-        // consumer_sleeping_.store(true, std::memory_order_seq_cst);
+        consumer_sleeping_.store(true, std::memory_order_seq_cst);
 
-        // // Double check to prevent race condition where a producer pushed
-        // // right before we set the sleeping flag.
-        // if (head_.load(std::memory_order_relaxed)->next.load(std::memory_order_acquire) != nullptr) {
-        //     consumer_sleeping_.store(false, std::memory_order_relaxed);
-        //     return;
-        // }
+        // Double check to prevent a race condition where a producer pushed
+        // right before we set the sleeping flag, or if shutdown was requested.
+        if (head_.load(std::memory_order_relaxed)->next.load(std::memory_order_acquire) != nullptr ||
+            stop_requested.load(std::memory_order_acquire)) {
+            consumer_sleeping_.store(false, std::memory_order_relaxed);
+            return;
+        }
 
-        // // Sleep on the futex natively via C++20
-        // // consumer_sleeping_.wait(true, std::memory_order_acquire);
-        // consumer_sleeping_.wait(true, std::memory_order_relaxed);
-        // consumer_sleeping_.store(false, std::memory_order_relaxed); // ← reset after wakeup
+        // Sleep on the futex natively via C++20 until a producer calls consumer_sleeping_.notify_one()
+        consumer_sleeping_.wait(true, std::memory_order_relaxed);
+        consumer_sleeping_.store(false, std::memory_order_relaxed); // ← reset after wakeup
     }
 
   private:
