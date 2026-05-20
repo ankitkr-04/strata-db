@@ -6,9 +6,6 @@
 namespace stratadb::memory {
 BlockPool::BlockPool()
     : routing_ring_{} {
-    // 1. Allocate 256MB contiguous payload array, strictly aligned to 4096 (O_DIRECT)
-    // Note: std::aligned_alloc requires the total size to be a multiple of the alignment.
-    // 16384 * 16384 = 268,435,456, which is cleanly divisible by 4096.
     void* ptr = std::aligned_alloc(PAYLOAD_ARRAY_SIZE, BLOCK_SIZE * CAPACITY);
     if (ptr == nullptr) {
         throw std::bad_alloc();
@@ -19,15 +16,17 @@ BlockPool::BlockPool()
         routing_ring_[i] = i;
     }
 
+    // head_ tracks consumer progress. Starts at 0.
     head_.store(0, std::memory_order_relaxed);
-    tail_.store(0, std::memory_order_relaxed);
+
+    // tail_ tracks available item slot bounds. Starts at CAPACITY
+    // because all slots are pre-filled with blocks 0 to CAPACITY-1.
+    tail_.store(CAPACITY, std::memory_order_relaxed);
 }
 
 BlockPool::~BlockPool() {
     if (payload_arena_)
         std::free(payload_arena_);
 }
-
-
 
 } // namespace stratadb::memory

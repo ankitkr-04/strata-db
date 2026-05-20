@@ -73,7 +73,7 @@ class WalPipeline {
     alignas(utils::CACHE_LINE_SIZE) std::span<std::byte> active_blocks_[utils::MAX_SUPPORTED_THREADS]{};
 
     // 64-byte offset ensures the Layout starts on a clean cache line
-    static constexpr size_t LAYOUT_OFFSET = utils::CACHE_LINE_SIZE;
+    static constexpr size_t LAYOUT_OFFSET = 4096; // 4 KiB, which is also the typical hardware sector size
 
     inline auto get_layout(std::span<std::byte> memory) noexcept -> Layout* {
         return reinterpret_cast<Layout*>(memory.data() + LAYOUT_OFFSET);
