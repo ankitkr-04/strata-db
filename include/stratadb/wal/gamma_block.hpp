@@ -50,7 +50,7 @@ struct alignas(4096) GammaBlock {
         const size_t total_required = sizeof(k_len) + sizeof(v_len) + k_len + v_len;
 
         // Check capacity
-        if (append_offset_ + total_required > arena.size()) {
+        if (append_offset_ + total_required > BlockSize) {
             return false;
         }
 
@@ -102,7 +102,7 @@ struct alignas(4096) GammaBlock {
     }
 
     // called by the producer thread when the block is full or needs to be sealed for I/O handoff
-    [[nodiscard]] auto finalize(uint64_t seq_num) -> FlushResult {
+    [[nodiscard]] auto finalize(uint64_t /*seq_num*/) -> FlushResult {
         size_t end_offset = (append_offset_ + 4095) & ~4095ULL;
         if (end_offset > BlockSize)
             end_offset = BlockSize;
@@ -121,7 +121,9 @@ struct alignas(4096) GammaBlock {
                                                end_offset - start_offset);
 
         flush_offset_ = end_offset;
-        return FlushResult{.memory_to_write = span, .block_internal_offset = start_offset, .max_lsn = seq_num};
+        return FlushResult{.memory_to_write = span,
+                           .block_internal_offset = start_offset,
+                           .max_lsn = header.sequence_number};
     }
 };
 

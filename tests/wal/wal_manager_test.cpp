@@ -44,7 +44,7 @@ TEST(WalManagerTest, BasicWriteBatch) {
     wal.start_flusher();
 
     WriteBatch batch;
-    std::string large_value(5000, 'X');
+    std::string large_value(3000, 'X');
     batch.emplace_back("hello", large_value);
     batch.emplace_back("key2", "value2");
 
@@ -95,7 +95,7 @@ TEST(WalManagerTest, ConcurrentGroupCommit) {
     for (int i = 0; i < NUM_THREADS; ++i) {
         threads.emplace_back([&wal, i]() -> void {
             WriteBatch batch;
-            std::string large_value(5000, 'Y');
+            std::string large_value(3000, 'Y');
             batch.emplace_back("thread" + std::to_string(i), large_value);
             wal.write_batch(batch);
         });

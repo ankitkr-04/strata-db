@@ -10,8 +10,10 @@ WalManager::~WalManager() {
 
     // Wake up the Vyukov queue if it was sleeping by pushing a dummy node.
     // The flusher will wake up, see the dummy node (or see stop_requested_), and exit.
-    std::visit([](auto& active_pipeline) -> auto { active_pipeline.flush_pipeline(); }, pipeline_);
+    // std::visit([](auto& active_pipeline) -> auto { active_pipeline.flush_pipeline(); }, pipeline_);
 
+    stop_requested_.store(true, std::memory_order_release);
+    stop_requested_.notify_all();
     // jthread automatically joins here
 }
 
@@ -42,7 +44,7 @@ void WalManager::flusher_loop() {
         uint64_t highest_lsn_in_batch = 0;
 
         std::visit(
-            [&](auto& active_pipeline) {
+            [&](auto& active_pipeline) -> auto {
                 // 1. DRAIN THE LOCK-FREE QUEUE (Group Commit Batching)
                 while (true) {
                     auto [payload_node_base, free_node_base] = active_pipeline.pop_ready_block();
@@ -79,19 +81,7 @@ void WalManager::flusher_loop() {
                     }
 
                     // 4. MEMORY RECYCLING
-                    // IMPORTANT: We return the old head/freed node, not necessarily the payload node,
-                    // depending on the Vyukov/SPSC semantics returned by PopResultData.
-                    // But wait, the original code used to release `node` (the payload) but for Vyukov
-                    // the initial stub memory might not belong to the pool. Actually, the stub is inside
-                    // the class. We should only recycle if returning to the pool makes sense.
-                    // If node_to_free points to the internal `stub_`, its memory address will not match
-                    // an actual BlockPool chunk, which could be an issue. However, let's assume
-                    // the pool ignores invalid pointers or we just skip if iov.iov_len == 0.
-                    // Wait, if node_to_free is the stub, and `iov.iov_len > 0`...
-                    if (iov.iov_len > 0) {
-                        // In a true implementation, we must check if node_to_free is the internal stub.
-                        // Here we just release whatever mem pointer we got that represents a block pool chunk.
-                        // Technically `node_to_free` is exactly what we need to return.
+                    if (node_to_free && node_to_free->is_dynamically_allocated) {
                         std::span<std::byte> raw_chunk{reinterpret_cast<std::byte*>(node_to_free),
                                                        memory::BlockPool::BLOCK_SIZE};
                         pool_.release_block(raw_chunk);
@@ -109,8 +99,14 @@ void WalManager::flusher_loop() {
                     }
 
                     // WAKE UP WAITING WRITERS!
-                    if (highest_lsn_in_batch > durable_lsn_.load(std::memory_order_acquire)) {
-                        durable_lsn_.store(highest_lsn_in_batch, std::memory_order_release);
+                    if (highest_lsn_in_batch > 0) {
+                        uint64_t cur = durable_lsn_.load(std::memory_order_relaxed);
+                        while (highest_lsn_in_batch > cur
+                               && !durable_lsn_.compare_exchange_weak(cur,
+                                                                      highest_lsn_in_batch,
+                                                                      std::memory_order_release,
+                                                                      std::memory_order_relaxed)) {
+                        }
                         durable_lsn_.notify_all(); // Wakes up all sleeping DB::Put threads instantly
                     }
                 }
@@ -118,7 +114,7 @@ void WalManager::flusher_loop() {
                 // 6. POWER MANAGEMENT & SHUTDOWN CONDITION
                 bool stop = stop_requested_.load(std::memory_order_acquire);
                 if (!performed_work && !stop) {
-                    active_pipeline.wait_for_work();
+                    active_pipeline.wait_for_work(stop_requested_);
                 }
             },
             pipeline_);

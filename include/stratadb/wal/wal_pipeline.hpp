@@ -42,8 +42,8 @@ class WalPipeline {
         return handoff_queue_.pop();
     }
 
-    void wait_for_work() noexcept {
-        handoff_queue_.wait_for_work();
+    void wait_for_work(std::atomic<bool>& stop_requested) noexcept {
+        handoff_queue_.wait_for_work(stop_requested);
     }
 
     void flush_pipeline() noexcept {
@@ -56,10 +56,12 @@ class WalPipeline {
         }
 
         // 2. Push an empty dummy node to unconditionally wake the Flusher thread
-        static FlushResult dummy_node{};
-        dummy_node.memory_to_write = {};
-        dummy_node.max_lsn = 0; // 0 means ignore
-        handoff_queue_.push(&dummy_node);
+        // Allocate dynamically since using a static local variable breaks multiple flushes/re-queues
+        auto* dummy_node = new FlushResult{};
+        dummy_node->is_dynamically_allocated = true;
+        dummy_node->memory_to_write = {};
+        dummy_node->max_lsn = 0; // 0 means ignore
+        handoff_queue_.push(dummy_node);
     }
 
   private:
@@ -93,7 +95,7 @@ class WalPipeline {
         auto* block = get_layout(memory);
 
         // Finalize the block, which computes CRCs/XXH3, stamps the final LSN, and returns the exact memory to flush.
-        FlushResult result = block->finalize(0);
+        FlushResult result = block->finalize(block->header.sequence_number);
 
         // Copy the stack result into the front of 16 KiB aligned memory, which is what the I/O engine expects.
         auto* queue_node = new (memory.data()) FlushResult{

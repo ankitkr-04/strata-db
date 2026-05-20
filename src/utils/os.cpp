@@ -117,28 +117,26 @@ inline auto sync_data_impl(int fd) noexcept -> bool {
     // macOS fsync/fdatasync does NOT flush the hardware write cache.
     // F_FULLFSYNC strictly forces the drive to flush to physical platters.
     return ::fcntl(fd, F_FULLFSYNC) == 0;
-    // macOS requires mach thread ports for affinity, which breaks POSIX semantics.
-    // We gracefully degrade to returning false.
-    inline auto pin_thread_impl(std::uint32_t /*core_id*/) noexcept -> bool {
-        return false;
-    }
-    inline auto elevate_rt_impl() noexcept -> bool {
-        return false;
-    }
-    inline auto is_isolated_impl(std::uint32_t /*target_core*/) noexcept -> bool {
-        return false;
-    }
-    inline auto auto_discover_isolated_core_impl() noexcept -> std::optional<std::uint32_t> {
-        return std::nullopt;
-    }
+}
+// macOS requires mach thread ports for affinity, which breaks POSIX semantics.
+// We gracefully degrade to returning false.
+inline auto pin_thread_impl(std::uint32_t /*core_id*/) noexcept -> bool {
+    return false;
+}
+inline auto elevate_rt_impl() noexcept -> bool {
+    return false;
+}
+inline auto is_isolated_impl(std::uint32_t /*target_core*/) noexcept -> bool {
+    return false;
+}
+inline auto auto_discover_isolated_core_impl() noexcept -> std::optional<std::uint32_t> {
+    return std::nullopt;
 }
 #else
 inline auto sync_data_impl(int /*fd*/) noexcept -> bool {
     return false; // Unsupported OS fallback
 }
-inline auto sync_data_impl(int /*fd*/) noexcept -> bool {
-    return false;
-}
+
 inline auto pin_thread_impl(std::uint32_t /*core_id*/) noexcept -> bool {
     return false;
 }

@@ -96,8 +96,10 @@ class SpscMailboxQueue {
         return {nullptr, nullptr}; // No messages in any mailbox
     }
 
-    void wait_for_work() noexcept {
-        cpu_relax(); // just relax the CPU while waiting for work. The Flusher thread can call this in a loop when idle.
+    void wait_for_work(std::atomic<bool>& stop_requested) noexcept {
+        stop_requested.wait(false, std::memory_order_acquire);
+        // cpu_relax(); // just relax the CPU while waiting for work. The Flusher thread can call this in a loop when
+        // idle.
     }
 
   private:

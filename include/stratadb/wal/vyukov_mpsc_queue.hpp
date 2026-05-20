@@ -15,6 +15,7 @@ namespace stratadb::wal {
 class VyukovMpscQueue {
   public:
     VyukovMpscQueue() noexcept {
+        stub_.is_dynamically_allocated = false;
         stub_.next.store(nullptr, std::memory_order_relaxed);
         head_.store(&stub_, std::memory_order_relaxed);
         tail_.store(&stub_, std::memory_order_relaxed);
@@ -40,7 +41,7 @@ class VyukovMpscQueue {
         prev->next.store(node, std::memory_order_release);
 
         // 4. Wake the flusher if it went to sleep to save power
-        if (consumer_sleeping_.load(std::memory_order_relaxed)) {
+        if (consumer_sleeping_.load(std::memory_order_seq_cst)) {
             consumer_sleeping_.store(false, std::memory_order_relaxed);
             consumer_sleeping_.notify_one(); // Linux futex wake
         }
@@ -78,18 +79,21 @@ class VyukovMpscQueue {
 
     // --- CONSUMER POWER MANAGEMENT ---
     // Called by the flusher when `pop()` returns nullptr.
-    void wait_for_work() noexcept {
-        consumer_sleeping_.store(true, std::memory_order_relaxed);
+    void wait_for_work(std::atomic<bool>& stop_requested) noexcept {
+        stop_requested.wait(false, std::memory_order_acquire); // Wait until stop is requested or a producer pushes work
+        // consumer_sleeping_.store(true, std::memory_order_seq_cst);
 
-        // Double check to prevent race condition where a producer pushed
-        // right before we set the sleeping flag.
-        if (head_.load(std::memory_order_relaxed)->next.load(std::memory_order_acquire) != nullptr) {
-            consumer_sleeping_.store(false, std::memory_order_relaxed);
-            return;
-        }
+        // // Double check to prevent race condition where a producer pushed
+        // // right before we set the sleeping flag.
+        // if (head_.load(std::memory_order_relaxed)->next.load(std::memory_order_acquire) != nullptr) {
+        //     consumer_sleeping_.store(false, std::memory_order_relaxed);
+        //     return;
+        // }
 
-        // Sleep on the futex natively via C++20
-        consumer_sleeping_.wait(true, std::memory_order_acquire);
+        // // Sleep on the futex natively via C++20
+        // // consumer_sleeping_.wait(true, std::memory_order_acquire);
+        // consumer_sleeping_.wait(true, std::memory_order_relaxed);
+        // consumer_sleeping_.store(false, std::memory_order_relaxed); // ← reset after wakeup
     }
 
   private:
