@@ -48,20 +48,15 @@ class WalPipeline {
 
     void flush_pipeline() noexcept {
         // 1. Forcefully seal and dispatch ALL active thread-local blocks
-        // (This simulates the Micro-Batching Timeout for our tests)
         for (std::size_t i = 0; i < utils::MAX_SUPPORTED_THREADS; ++i) {
             if (!active_blocks_[i].empty()) {
                 seal_and_dispatch(i);
             }
         }
 
-        // 2. Push a dummy node to wake up the Flusher if it's sleeping on an empty queue
-        auto tid = get_dense_thread_index() % utils::MAX_SUPPORTED_THREADS;
-        auto& sentinel = per_thread_sentinels_[tid];
-        sentinel.is_dynamically_allocated = false;
-        sentinel.memory_to_write = {};
-        sentinel.max_lsn = 0; // 0 means ignore
-        handoff_queue_.push(&sentinel);
+        // 2. Push the pre-initialized dummy node to wake up the Flusher if it's sleeping
+        const std::size_t tid = get_dense_thread_index() % utils::MAX_SUPPORTED_THREADS;
+        handoff_queue_.push(&per_thread_sentinels_[tid]);
     }
 
   private:
@@ -117,5 +112,5 @@ class WalPipeline {
                   "LAYOUT_OFFSET must be within the block pool block size");
 };
 
-}// namespace stratadb::wal
+} // namespace stratadb::wal
 // namespace stratadb::wal
