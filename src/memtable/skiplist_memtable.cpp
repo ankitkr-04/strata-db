@@ -11,7 +11,7 @@ namespace stratadb::memtable {
 namespace {
 
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
-thread_local std::uint64_t tl_rng = [] -> unsigned long {
+thread_local std::uint64_t tl_rng = [] -> std::uint64_t {
     auto seed = reinterpret_cast<uintptr_t>(&tl_rng);
 
     seed ^= seed >> 33;

@@ -90,9 +90,9 @@ class WalManager {
 
     // Disable copying and moving: resource ownership (fd, thread) is unique.
     WalManager(const WalManager&) = delete;
-    WalManager& operator=(const WalManager&) = delete;
+    auto operator=(const WalManager&) -> WalManager& = delete;
     WalManager(WalManager&&) = delete;
-    WalManager& operator=(WalManager&&) = delete;
+    auto operator=(WalManager&&) -> WalManager& = delete;
 
     // Allows the system or user to query what architecture actually loaded.
     [[nodiscard]] auto get_effective_config() const noexcept -> const config::WalConfig& {
@@ -102,7 +102,7 @@ class WalManager {
     void write_batch(const WriteBatch& batch) {
         // std::visit resolves the variant ONCE per batch.
         std::visit(
-            [&batch](auto& active_pipeline) {
+            [&batch](auto& active_pipeline) -> auto {
                 // We are now INSIDE the strongly typed template.
                 // This loop runs with pure inline assembly. No virtual calls.
                 for (const auto& [k, v] : batch) {
@@ -128,7 +128,7 @@ class WalManager {
 
     // Forces all partially filled blocks to the Flusher (Solves the Stalled Writer Trap)
     void flush() noexcept {
-        std::visit([](auto& active_pipeline) { active_pipeline.flush_pipeline(); }, pipeline_);
+        std::visit([](auto& active_pipeline) -> auto { active_pipeline.flush_pipeline(); }, pipeline_);
     }
 
   private:
