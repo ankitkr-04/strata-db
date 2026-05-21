@@ -63,7 +63,8 @@ void WalManager::flusher_loop() {
 
                     // 2. CONSTRUCT POSIX SCATTER-GATHER ARRAY
                     struct iovec iov;
-                    iov.iov_base = const_cast<std::byte*>(node->memory_to_write.data());
+                    // POSIX iov_base is void* (non-const). The kernel will not modify our buffer.
+                    iov.iov_base = const_cast<void*>(static_cast<const void*>(node->memory_to_write.data()));
                     iov.iov_len = node->memory_to_write.size();
 
                     const uint64_t physical_offset = current_file_offset_.load(std::memory_order_relaxed);

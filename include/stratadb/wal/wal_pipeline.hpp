@@ -117,5 +117,5 @@ class WalPipeline {
                   "LAYOUT_OFFSET must be within the block pool block size");
 };
 
-}; // namespace stratadb::wal
+}// namespace stratadb::wal
 // namespace stratadb::wal

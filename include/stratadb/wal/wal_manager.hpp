@@ -14,6 +14,7 @@
 
 #include <span>
 #include <string>
+#include <thread>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -146,7 +147,7 @@ class WalManager {
 
     // Background Thread State
     std::atomic<bool> stop_requested_{false};
-    std::jthread flusher_thread_;
+    std::jthread flusher_thread_{};
 
     // Declare the flusher loop function
     void flusher_loop();

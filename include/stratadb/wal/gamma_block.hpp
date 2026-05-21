@@ -80,9 +80,7 @@ struct alignas(4096) GammaBlock {
 
     [[nodiscard]] auto partial_flush() noexcept -> FlushResult {
         size_t start_offset = flush_offset_;
-        size_t end_offset = (append_offset_ + 4095) & ~4095ULL; // Align up to 4KiB
-        if (end_offset > BlockSize)
-            end_offset = BlockSize;
+        size_t end_offset = sector_aligned_end();
 
         if (append_offset_ < end_offset) {
             std::memset(reinterpret_cast<std::byte*>(this) + append_offset_, 0, end_offset - append_offset_);
@@ -102,9 +100,7 @@ struct alignas(4096) GammaBlock {
 
     // called by the producer thread when the block is full or needs to be sealed for I/O handoff
     [[nodiscard]] auto finalize(uint64_t /*seq_num*/) noexcept -> FlushResult {
-        std::size_t end_offset = (append_offset_ + 4095) & ~4095ULL;
-        if (end_offset > BlockSize)
-            end_offset = BlockSize;
+        std::size_t end_offset = sector_aligned_end();
 
         if (append_offset_ < end_offset) {
             std::memset(reinterpret_cast<std::byte*>(this) + append_offset_, 0, end_offset - append_offset_);
@@ -123,6 +119,12 @@ struct alignas(4096) GammaBlock {
         return FlushResult{.memory_to_write = span,
                            .block_internal_offset = start_offset,
                            .max_lsn = header.sequence_number};
+    }
+
+  private:
+    [[nodiscard]] auto sector_aligned_end() const noexcept -> std::size_t {
+        const std::size_t aligned = (append_offset_ + 4095U) & ~static_cast<std::size_t>(4095U);
+        return std::min(aligned, BlockSize);
     }
 };
 

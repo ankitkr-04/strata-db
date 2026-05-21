@@ -16,7 +16,7 @@ enum class ValueType : std::uint8_t { TypeDeletion = 0x00, TypeValue = 0x01 };
 
 struct SkipListNode {
     static constexpr std::size_t PREFIX_BYTES = 7;
-    static constexpr std::size_t TRAILER_BYTES = 8;
+    static constexpr std::size_t TRAILER_BYTES = sizeof(std::uint64_t);
     static constexpr std::size_t TYPE_BITS = 8;
     static constexpr std::uint64_t TYPE_MASK = (std::uint64_t{1} << TYPE_BITS) - 1;
     static constexpr std::uint64_t MAX_SEQUENCE = std::numeric_limits<std::uint64_t>::max() >> TYPE_BITS;

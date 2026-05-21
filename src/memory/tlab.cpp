@@ -17,7 +17,7 @@ auto TLAB::allocate_slow(std::size_t size, std::size_t alignment) noexcept -> vo
     }
     const std::size_t tlab_size = arena_->tlab_size();
 
-    if (size >= (tlab_size / 2)) {
+    if (size >= (tlab_size / LARGE_ALLOC_TLAB_FRACTION)) {
         return arena_->allocate_aligned(size, alignment);
     }
 

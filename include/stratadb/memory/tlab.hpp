@@ -9,6 +9,7 @@
 
 namespace stratadb::memory {
 class Arena;
+static constexpr std::size_t LARGE_ALLOC_TLAB_FRACTION = 2;
 
 class TLAB {
   public:
