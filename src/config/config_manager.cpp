@@ -20,10 +20,10 @@ ConfigManager::ConfigManager(ImmutableConfig imm, MutableConfig mut, memory::Epo
 
 ConfigManager::~ConfigManager() noexcept {
     auto* ptr = current_mutable_config_.exchange(nullptr, std::memory_order_acq_rel);
-    if (ptr) {
-        epoch_mgr_.retire(ptr);
-    }
-
+    // Destructor caller is not guaranteed to be a registered epoch thread.
+    // Directly delete: no reader can hold a ReadGuard past our lifetime because
+    // ConfigManager outlives all ReadGuards (RAII contract).
+    delete ptr;
 }
 
 auto ConfigManager::get_mutable() const noexcept -> ConfigManager::ReadGuard {
