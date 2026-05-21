@@ -1,6 +1,5 @@
 #pragma once
-#include "stratadb/io/io_concept.hpp"
-
+#include "stratadb/io/io_capabilities.hpp"
 #include <cstddef>
 #include <cstdint>
 #include <new>

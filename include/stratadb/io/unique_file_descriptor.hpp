@@ -41,7 +41,7 @@ class UniqueFd {
 
     void reset(int new_fd = -1) noexcept {
         if (is_valid()) {
-            utils::os::close_fd(fd_); 
+            utils::os::close_fd(fd_);
         }
         fd_ = new_fd;
     }

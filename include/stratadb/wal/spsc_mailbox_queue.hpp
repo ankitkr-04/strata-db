@@ -1,7 +1,7 @@
 #pragma once
 
 #include "stratadb/utils/hardware.hpp"
-#include "stratadb/wal/vyukov_mpsc_queue.hpp" // For the MpscNode base struct
+#include "stratadb/wal/wal_concept.hpp"
 
 #include <atomic>
 #include <cstddef>
