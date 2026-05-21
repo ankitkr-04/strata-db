@@ -111,6 +111,11 @@ class WalPipeline {
         // clear the pointer so next write will trigger new block allocation
         active_blocks_[tid] = {};
     }
+    static_assert(sizeof(FlushResult) <= LAYOUT_OFFSET,
+                  "FlushResult overlaps the Layout region; increase LAYOUT_OFFSET");
+    static_assert(LAYOUT_OFFSET < memory::BlockPool::BLOCK_SIZE,
+                  "LAYOUT_OFFSET must be within the block pool block size");
 };
+
 }; // namespace stratadb::wal
 // namespace stratadb::wal
