@@ -17,7 +17,8 @@ struct alignas(4096) DeltaBlock {
     static_assert(BlockSize % 4096 == 0, "Block size must be a multiple of 4Kn sectors");
     static constexpr size_t SECTOR_SIZE = 4096;
     static constexpr size_t SECTOR_MASK = SECTOR_SIZE - 1;
-    static constexpr size_t CRC_OFFSET = 4092;
+    static constexpr std::size_t CRC_FIELD_SIZE = sizeof(std::uint32_t);
+    static constexpr std::size_t CRC_OFFSET = SECTOR_SIZE - CRC_FIELD_SIZE;
 
     struct Header {
         uint64_t sequence_number{0};
