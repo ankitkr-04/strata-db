@@ -55,19 +55,20 @@ class WalPipeline {
             }
         }
 
-        // 2. Push an empty dummy node to unconditionally wake the Flusher thread
-        // Allocate dynamically since using a static local variable breaks multiple flushes/re-queues
-        auto* dummy_node = new FlushResult{};
-        dummy_node->is_dynamically_allocated = true;
-        dummy_node->memory_to_write = {};
-        dummy_node->max_lsn = 0; // 0 means ignore
-        handoff_queue_.push(dummy_node);
+        // 2. Push a dummy node to wake up the Flusher if it's sleeping on an empty queue
+        auto tid = get_dense_thread_index() % utils::MAX_SUPPORTED_THREADS;
+        auto& sentinel = per_thread_sentinels_[tid];
+        sentinel.is_dynamically_allocated = false;
+        sentinel.memory_to_write = {};
+        sentinel.max_lsn = 0; // 0 means ignore
+        handoff_queue_.push(&sentinel);
     }
 
   private:
     Queue handoff_queue_;
     memory::BlockPool& pool_;
     std::atomic<uint64_t>& lsn_generator_;
+    alignas(utils::CACHE_LINE_SIZE) FlushResult per_thread_sentinels_[utils::MAX_SUPPORTED_THREADS]{};
 
     // Thread-Local raw memory tracking without standard `thread_local` overhead
     alignas(utils::CACHE_LINE_SIZE) std::span<std::byte> active_blocks_[utils::MAX_SUPPORTED_THREADS]{};
