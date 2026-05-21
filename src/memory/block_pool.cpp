@@ -6,7 +6,7 @@
 namespace stratadb::memory {
 BlockPool::BlockPool()
     : routing_ring_{} {
-    void* ptr = std::aligned_alloc(PAYLOAD_ARRAY_SIZE, BLOCK_SIZE * CAPACITY);
+    void* ptr = std::aligned_alloc(PAYLOAD_ARENA_ALIGNMENT, BLOCK_SIZE * CAPACITY);
     if (ptr == nullptr) {
         throw std::bad_alloc();
     }

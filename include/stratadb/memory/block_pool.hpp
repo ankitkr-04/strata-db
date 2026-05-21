@@ -15,7 +15,7 @@ class BlockPool {
     static constexpr size_t BLOCK_SIZE = 32 * stratadb::utils::bytes::KiB; // 32KB blocks
     static constexpr size_t CAPACITY = 16384;                              // 2^14 blocks -> 256MB total
     static constexpr size_t INDEX_MASK = CAPACITY - 1;
-    static constexpr size_t PAYLOAD_ARRAY_SIZE = 4 * stratadb::utils::bytes::KiB;
+    static constexpr size_t PAYLOAD_ARENA_ALIGNMENT = 4 * stratadb::utils::bytes::KiB;
 
     BlockPool();
     ~BlockPool();
