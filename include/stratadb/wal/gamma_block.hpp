@@ -28,8 +28,8 @@ struct alignas(4096) GammaBlock {
 
     alignas(8) std::array<std::byte, BlockSize - sizeof(Header)> arena;
 
-    size_t append_offset_{sizeof(Header)};
-    size_t flush_offset_{0};
+    std::size_t append_offset_{sizeof(Header)};
+    std::size_t flush_offset_{0};
 
     void init(uint64_t seq) noexcept {
         header.sequence_number = seq;
@@ -101,8 +101,8 @@ struct alignas(4096) GammaBlock {
     }
 
     // called by the producer thread when the block is full or needs to be sealed for I/O handoff
-    [[nodiscard]] auto finalize(uint64_t /*seq_num*/) -> FlushResult {
-        size_t end_offset = (append_offset_ + 4095) & ~4095ULL;
+    [[nodiscard]] auto finalize(uint64_t /*seq_num*/) noexcept -> FlushResult {
+        std::size_t end_offset = (append_offset_ + 4095) & ~4095ULL;
         if (end_offset > BlockSize)
             end_offset = BlockSize;
 
@@ -115,7 +115,7 @@ struct alignas(4096) GammaBlock {
 
         // Because we modified the header (Sector 0), we MUST rewrite from offset 0
         // to persist the final hash. NVMe handles large overwrites perfectly.
-        size_t start_offset = 0;
+        std::size_t start_offset = 0;
         auto span = std::span<const std::byte>(reinterpret_cast<const std::byte*>(this) + start_offset,
                                                end_offset - start_offset);
 
