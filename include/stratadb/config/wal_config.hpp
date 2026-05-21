@@ -29,7 +29,8 @@ struct WalConfig {
 
     // The micro-batching timeout. If the Flusher thread receives a partial block
     // and no other threads push data within this window, it flushes to disk.
-    std::chrono::microseconds target_flush_latency{50us};
+    static constexpr std::chrono::microseconds DEFAULT_TARGET_FLUSH_LATENCY{50};
+    std::chrono::microseconds target_flush_latency{DEFAULT_TARGET_FLUSH_LATENCY};
 
     // --- CONCURRENCY & SCHEDULING (The Fast Path) ---
     SpscMode spsc_mode{SpscMode::Disabled};
