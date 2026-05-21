@@ -152,6 +152,10 @@ class EpochManager {
 
     [[nodiscard]] auto register_thread() noexcept -> std::expected<void, EpochError>;
     void unregister_thread();
+    static_assert(std::has_single_bit(RECLAIM_INTERVAL),
+                  "RECLAIM_INTERVAL must be a power of two for bitmask optimization");
+    static_assert(sizeof(ThreadState) == 4096,
+                  "ThreadState must fit in exactly one OS page (4096 bytes) for TLB locality");
 };
 
 } // namespace stratadb::memory
