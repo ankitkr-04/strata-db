@@ -101,7 +101,7 @@ TEST(TLAB, RefillsForSmallAllocationWhenTinySlackRemains) {
 // ---------- EXACT BOUNDARY ----------
 
 TEST(TLAB, ExactBoundary) {
-    auto arena = Arena::create(make_config(8192, MemoryConfig::DEFAULT_BLOCK_ALIGNMENT)).value();
+    auto arena = Arena::create(make_config(8192, MemoryConfig::ALIGNMENT_AUTODETECT)).value();
     TLAB tlab(arena);
 
     auto p1 = tlab.allocate(2048);
@@ -130,7 +130,7 @@ TEST(TLAB, LargeAllocation) {
 // ---------- OOM ----------
 
 TEST(TLAB, OutOfMemory) {
-    auto arena = Arena::create(make_config(8192, MemoryConfig::DEFAULT_BLOCK_ALIGNMENT)).value();
+    auto arena = Arena::create(make_config(8192, MemoryConfig::ALIGNMENT_AUTODETECT)).value();
     TLAB tlab(arena);
 
     while (true) {
