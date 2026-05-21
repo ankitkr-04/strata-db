@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 
 namespace stratadb::config {
@@ -31,7 +32,8 @@ struct IOConfig {
 
     // If > 0, tells the Linux kernel to spawn a dedicated SQPOLL thread.
     // This allows the database to submit I/O with ZERO syscall context switches.
-    std::size_t uring_sqpoll_idle_ms{0};
+    std::chrono::milliseconds uring_sqpoll_idle{
+        0}; // 0 = disabled, otherwise the idle timeout before the kernel thread goes to sleep.
 
     // Bypasses kernel virtual memory mapping overhead during hot-path I/O.
     bool pre_register_buffers{true};
