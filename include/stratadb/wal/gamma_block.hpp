@@ -1,8 +1,6 @@
 #pragma once
 
 #include "wal_concept.hpp"
-
-#define XXH_INLINE_ALL
 #include "xxhash.h"
 
 #include <array>
@@ -12,6 +10,7 @@
 #include <span>
 
 namespace stratadb::wal {
+[[nodiscard]] auto compute_wal_block_hash(const void* data, std::size_t length) noexcept -> XXH128_hash_t;
 
 template <size_t BlockSize = 16384> // 16KiB default
 struct alignas(4096) GammaBlock {
@@ -112,7 +111,7 @@ struct alignas(4096) GammaBlock {
         }
 
         // Compute hash over the entire valid block
-        header.block_hash = XXH3_128bits(this, end_offset);
+        header.block_hash = compute_wal_block_hash(this, end_offset);
 
         // Because we modified the header (Sector 0), we MUST rewrite from offset 0
         // to persist the final hash. NVMe handles large overwrites perfectly.
