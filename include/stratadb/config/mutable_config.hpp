@@ -11,7 +11,8 @@ namespace stratadb::config {
 struct MutableConfig {
     [[nodiscard]]
     static auto default_compaction_threads() -> std::uint32_t {
-        return std::clamp(utils::logical_core_count() / 4u, 1u, 8u);
+        static const std::uint32_t threads = std::clamp(utils::logical_core_count() / 4u, 1u, 8u);
+        return threads;
     }
     MemTableConfig memtable;
 
