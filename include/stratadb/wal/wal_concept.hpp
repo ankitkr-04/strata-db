@@ -30,8 +30,8 @@ concept ConcurrencyQueue = requires(T q, MpscNode* node) {
 // Represents the state of a partial flush for O_DIRECT RMW
 struct FlushResult : public MpscNode {
     std::span<const std::byte> memory_to_write;
-    std::size_t block_internal_offset;
-    uint64_t max_lsn; // The highest LSN contained in this block, used for commit ordering guarantees
+    std::size_t block_internal_offset{};
+    uint64_t max_lsn{}; // The highest LSN contained in this block, used for commit ordering guarantees
 };
 
 // Physical Wal block layout must be able to append KV pairs,

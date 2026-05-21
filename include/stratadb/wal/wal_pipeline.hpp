@@ -14,7 +14,12 @@ class WalPipeline {
   public:
     WalPipeline(memory::BlockPool& pool, std::atomic<uint64_t>& lsn_gen)
         : pool_(pool)
-        , lsn_generator_(lsn_gen) {}
+        , lsn_generator_(lsn_gen) {
+        for (auto& s : per_thread_sentinels_) {
+            s.is_dynamically_allocated =
+                false; // Mark sentinels as non-dynamically allocated to prevent accidental pool release
+        }
+    }
 
     // The Hot Path: Inlined, zero virtual dispatch.
     // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)

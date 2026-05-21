@@ -47,7 +47,7 @@ class BlockPool {
                                             current_head + 1,
                                             std::memory_order_acq_rel,
                                             std::memory_order_acquire)) {
-                const uint16_t block_id = routing_ring_[current_head & INDEX_MASK];
+                const uint16_t block_id = routing_ring_[current_head & INDEX_MASK].load(std::memory_order_relaxed);
                 return std::span<std::byte>{payload_arena_ + (static_cast<size_t>(block_id) * BLOCK_SIZE), BLOCK_SIZE};
             }
         }
@@ -65,7 +65,7 @@ class BlockPool {
 
         const uint64_t current_tail = tail_.load(std::memory_order_relaxed);
 
-        routing_ring_[current_tail & INDEX_MASK] = block_id;
+        routing_ring_[current_tail & INDEX_MASK].store(block_id, std::memory_order_release);
         tail_.store(current_tail + 1, std::memory_order_release);
         tail_.notify_one();
     }
@@ -75,7 +75,7 @@ class BlockPool {
     friend struct test::BlockPoolTestPeer;
 
     std::byte* payload_arena_{nullptr};
-    uint16_t routing_ring_[CAPACITY];
+    std::atomic<uint16_t> routing_ring_[CAPACITY];
 
     alignas(stratadb::utils::CACHE_LINE_SIZE) std::atomic_uint64_t head_{0};
     alignas(stratadb::utils::CACHE_LINE_SIZE) std::atomic_uint64_t tail_{0};
