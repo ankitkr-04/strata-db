@@ -4,16 +4,22 @@
 #include "stratadb/utils/hardware.hpp"
 
 #include <atomic>
+#include <cassert> // Required for defensive boundary contracts
 #include <cstddef>
 #include <cstdint>
 #include <span>
 
 namespace stratadb::memory {
-class BlockPool {
 
+// Forward declare the test peer wrapper
+namespace test {
+struct BlockPoolTestPeer;
+}
+
+class BlockPool {
   public:
-    static constexpr size_t BLOCK_SIZE = 32 * stratadb::utils::bytes::KiB; // 32KB blocks
-    static constexpr size_t CAPACITY = 16384;                              // 2^14 blocks -> 256MB total
+    static constexpr size_t BLOCK_SIZE = 32 * stratadb::utils::bytes::KiB;
+    static constexpr size_t CAPACITY = 16384;
     static constexpr size_t INDEX_MASK = CAPACITY - 1;
     static constexpr size_t PAYLOAD_ARENA_ALIGNMENT = 4 * stratadb::utils::bytes::KiB;
 
@@ -24,14 +30,14 @@ class BlockPool {
     BlockPool(BlockPool&&) = delete;
     auto operator=(BlockPool&&) -> BlockPool& = delete;
 
-    // Multi Consumer
     [[nodiscard]] inline auto acquire_block() noexcept -> std::span<std::byte> {
         uint64_t current_head = head_.load(std::memory_order_acquire);
 
         while (true) {
             uint64_t current_tail = tail_.load(std::memory_order_acquire);
-            if (current_head >= current_tail) {
-                // Futex wait,  yield to avoid busy-waiting
+
+            // FIX 1: Signed distance computation to survive 2^64 integer wrap-around safely
+            if (static_cast<int64_t>(current_tail - current_head) <= 0) {
                 tail_.wait(current_tail, std::memory_order_acquire);
                 current_head = head_.load(std::memory_order_acquire);
                 continue;
@@ -47,9 +53,14 @@ class BlockPool {
         }
     }
 
-    // Single Producer
     inline void release_block(std::span<std::byte> returned_block) noexcept {
+        // FIX 2: Prevent hostile or out-of-bounds pointers from silently corrupting the lock-free routing ring
+        assert(returned_block.data() >= payload_arena_);
+        assert(returned_block.data() < payload_arena_ + (CAPACITY * BLOCK_SIZE));
+
         const auto byte_offset = static_cast<size_t>(returned_block.data() - payload_arena_);
+        assert(byte_offset % BLOCK_SIZE == 0);
+
         const auto block_id = static_cast<uint16_t>(byte_offset / BLOCK_SIZE);
 
         const uint64_t current_tail = tail_.load(std::memory_order_relaxed);
@@ -60,6 +71,9 @@ class BlockPool {
     }
 
   private:
+    // Architectural testing bridge: strictly grants access to the isolated testing struct
+    friend struct test::BlockPoolTestPeer;
+
     std::byte* payload_arena_{nullptr};
     uint16_t routing_ring_[CAPACITY];
 
