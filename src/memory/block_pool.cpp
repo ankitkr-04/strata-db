@@ -1,6 +1,7 @@
 #include "stratadb/memory/block_pool.hpp"
 
 #include <cstdlib>
+#include <numeric>
 #include <stdexcept>
 
 namespace stratadb::memory {
@@ -12,9 +13,7 @@ BlockPool::BlockPool()
     }
     payload_arena_ = static_cast<std::byte*>(ptr);
 
-    for (uint16_t i = 0; i < CAPACITY; ++i) {
-        routing_ring_[i] = i;
-    }
+    std::iota(routing_ring_, routing_ring_ + CAPACITY, 0);
 
     // head_ tracks consumer progress. Starts at 0.
     head_.store(0, std::memory_order_relaxed);

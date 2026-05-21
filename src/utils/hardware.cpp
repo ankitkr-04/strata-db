@@ -56,8 +56,8 @@ auto probe_io_capabilities_impl(int fd) noexcept -> io::IOCapabilities {
     // 2. Rotational Media Check
     struct stat st{};
     if (fstat(fd, &st) == 0) {
-        std::string path = "/sys/dev/block/" + std::to_string(major(st.st_dev)) + ":" + std::to_string(minor(st.st_dev))
-                           + "/queue/rotational";
+        char path[64];
+        std::snprintf(path, sizeof(path), "/sys/dev/block/%u:%u/queue/rotational", major(st.st_dev), minor(st.st_dev));
         std::ifstream file(path);
         int is_rot = 0;
         if (file >> is_rot) {
