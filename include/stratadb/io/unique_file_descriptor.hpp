@@ -5,10 +5,11 @@
 #include <utility>
 
 namespace stratadb::io {
+using FileHandle = int;
 class UniqueFd {
   public:
     constexpr UniqueFd() noexcept = default;
-    explicit UniqueFd(int fd) noexcept
+    explicit UniqueFd(FileHandle fd) noexcept
         : fd_(fd) {}
 
     ~UniqueFd() noexcept {
@@ -28,18 +29,18 @@ class UniqueFd {
         return *this;
     }
 
-    [[nodiscard]] constexpr auto get() const noexcept -> int {
+    [[nodiscard]] constexpr auto get() const noexcept -> FileHandle {
         return fd_;
     }
     [[nodiscard]] constexpr auto is_valid() const noexcept -> bool {
         return fd_ >= 0;
     }
 
-    constexpr auto release() noexcept -> int {
+    constexpr auto release() noexcept -> FileHandle {
         return std::exchange(fd_, -1);
     }
 
-    void reset(int new_fd = -1) noexcept {
+    void reset(FileHandle new_fd = -1) noexcept {
         if (is_valid()) {
             utils::os::close_fd(fd_);
         }
@@ -47,6 +48,6 @@ class UniqueFd {
     }
 
   private:
-    int fd_{-1};
+    FileHandle fd_{-1};
 };
 } // namespace stratadb::io
