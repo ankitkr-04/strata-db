@@ -1,5 +1,6 @@
 #include "stratadb/utils/os.hpp"
 
+#include <atomic>
 #include <climits>
 #include <fstream>
 #include <sstream>
@@ -17,6 +18,12 @@
 #endif
 
 namespace stratadb::utils::os {
+#ifndef NDEBUG
+namespace test_hooks {
+alignas(64) std::atomic<bool> fail_core_pinning{false};
+alignas(64) std::atomic<bool> fail_realtime_elevation{false};
+} // namespace test_hooks
+#endif
 namespace detail {
 
 #if defined(__linux__)
@@ -154,10 +161,21 @@ inline auto auto_discover_isolated_core_impl() noexcept -> std::optional<std::ui
 } // namespace detail
 
 auto pin_current_thread_to_core(std::uint32_t core_id) noexcept -> bool {
+#ifndef NDEBUG
+    // Evaluated only in test binaries. Completely omitted in production.
+    if (test_hooks::fail_core_pinning.load(std::memory_order_relaxed)) {
+        return false;
+    }
+#endif
     return detail::pin_thread_impl(core_id);
 }
 
 auto elevate_to_realtime_priority() noexcept -> bool {
+#ifndef NDEBUG
+    if (test_hooks::fail_realtime_elevation.load(std::memory_order_relaxed)) {
+        return false;
+    }
+#endif
     return detail::elevate_rt_impl();
 }
 

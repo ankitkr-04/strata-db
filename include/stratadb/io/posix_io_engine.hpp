@@ -1,6 +1,7 @@
 #pragma once
 #include "io_concept.hpp"
 
+
 #include <cstddef>
 #include <span>
 #include <sys/types.h>
@@ -8,6 +9,7 @@
 struct iovec;
 
 namespace stratadb::io {
+
 class PosixIoEngine {
   public:
     explicit PosixIoEngine(const io::IOCapabilities caps) noexcept

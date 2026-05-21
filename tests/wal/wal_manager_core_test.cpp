@@ -9,53 +9,24 @@
 #include <unistd.h>
 #include <vector>
 
-// Structural Hooks to dynamically intercept IO and OS syscall behaviors across the core test phases
-namespace stratadb::utils::os {
-static std::atomic<bool> fail_pinning{false};
-static std::atomic<bool> fail_rt_elevation{false};
+namespace stratadb::utils::os::test_hooks {
+extern std::atomic<bool> fail_core_pinning;
+extern std::atomic<bool> fail_realtime_elevation;
+} // namespace stratadb::utils::os::test_hooks
 
-bool pin_current_thread_to_core(uint32_t) noexcept {
-    return !fail_pinning.load(std::memory_order_relaxed);
-}
-bool elevate_to_realtime_priority() noexcept {
-    return !fail_rt_elevation.load(std::memory_order_relaxed);
-}
-} // namespace stratadb::utils::os
+namespace stratadb::io::test_hooks {
+extern std::atomic<bool> mock_io_error;
+extern std::atomic<bool> mock_sync_error;
+extern std::atomic<ssize_t> mock_short_write_bytes;
+} // namespace stratadb::io::test_hooks
 
 namespace stratadb::wal::test {
 
-static std::atomic<bool> mock_io_error{false};
-static std::atomic<bool> mock_sync_error{false};
-static std::atomic<ssize_t> mock_short_write_bytes{-1}; // -1 means disabled
-
-// Inline override within compilation unit to catch short writes and errors at execution boundary
-class TestHardwareEngineInterceptor {
-  public:
-    auto writev(int, std::span<const struct iovec> iov, uint64_t) noexcept -> std::optional<size_t> {
-        if (mock_io_error.load(std::memory_order_acquire)) {
-            return std::nullopt; // Media exception error
-        }
-        size_t total = 0;
-        for (const auto& io : iov) {
-            total += io.iov_len;
-        }
-        ssize_t short_limit = mock_short_write_bytes.load(std::memory_order_acquire);
-        if (short_limit >= 0 && total > static_cast<size_t>(short_limit)) {
-            return static_cast<size_t>(short_limit); // Force short write
-        }
-        return total;
-    }
-
-    auto sync(int) noexcept -> bool {
-        return !mock_sync_error.load(std::memory_order_acquire);
-    }
-};
-
 auto create_core_test_fd() -> io::UniqueFd {
     char tpl[] = "/tmp/stratadb_core_test_XXXXXX";
-    int fd = mkstemp(tpl);
+    int fd = ::mkstemp(tpl);
     if (fd != -1) {
-        unlink(tpl);
+        ::unlink(tpl);
     }
     return io::UniqueFd{fd};
 }
@@ -63,17 +34,27 @@ auto create_core_test_fd() -> io::UniqueFd {
 class WalManagerCoreTest : public ::testing::Test {
   protected:
     void SetUp() override {
-        utils::os::fail_pinning.store(false);
-        utils::os::fail_rt_elevation.store(false);
-        mock_io_error.store(false);
-        mock_sync_error.store(false);
-        mock_short_write_bytes.store(-1);
+        // Reset all external production hooks to baseline state before each run
+        utils::os::test_hooks::fail_core_pinning.store(false, std::memory_order_relaxed);
+        utils::os::test_hooks::fail_realtime_elevation.store(false, std::memory_order_relaxed);
+        io::test_hooks::mock_io_error.store(false, std::memory_order_relaxed);
+        io::test_hooks::mock_sync_error.store(false, std::memory_order_relaxed);
+        io::test_hooks::mock_short_write_bytes.store(-1, std::memory_order_relaxed);
+    }
+
+    void TearDown() override {
+        // Clean up hooks post-test execution to prevent cross-contamination
+        utils::os::test_hooks::fail_core_pinning.store(false, std::memory_order_relaxed);
+        utils::os::test_hooks::fail_realtime_elevation.store(false, std::memory_order_relaxed);
+        io::test_hooks::mock_io_error.store(false, std::memory_order_relaxed);
+        io::test_hooks::mock_sync_error.store(false, std::memory_order_relaxed);
+        io::test_hooks::mock_short_write_bytes.store(-1, std::memory_order_relaxed);
     }
 };
 
 // 11. Core Pinning System Call Failure Recovery
 TEST_F(WalManagerCoreTest, CorePinningSystemCallFailureRecovery) {
-    utils::os::fail_pinning.store(true); // Force pinning call failure
+    utils::os::test_hooks::fail_core_pinning.store(true, std::memory_order_release);
 
     config::WalConfig cfg;
     cfg.spsc_mode = config::SpscMode::ManualOverride;
@@ -86,13 +67,12 @@ TEST_F(WalManagerCoreTest, CorePinningSystemCallFailureRecovery) {
     wal.write_batch(batch);
     wal.flush();
 
-    // Invariant: Processing hot loop must continue executing normally without crash/panic
     SUCCEED();
 }
 
 // 12. Real-Time Scheduler Elevation Failure Fallback
 TEST_F(WalManagerCoreTest, RealTimeSchedulerElevationFailureFallback) {
-    utils::os::fail_rt_elevation.store(true); // Emulate absence of CAP_SYS_NICE permissions
+    utils::os::test_hooks::fail_realtime_elevation.store(true, std::memory_order_release);
 
     config::WalConfig cfg;
     cfg.request_realtime_priority = true;
@@ -104,7 +84,6 @@ TEST_F(WalManagerCoreTest, RealTimeSchedulerElevationFailureFallback) {
     wal.write_batch(batch);
     wal.flush();
 
-    // Invariant: Fallback gracefully to generic operational physics without deadlock
     SUCCEED();
 }
 
@@ -116,23 +95,21 @@ TEST_F(WalManagerCoreTest, StalledWriterTrapResolution) {
     WalManager wal(cfg, create_core_test_fd());
     wal.start_flusher();
 
-    WriteBatch tiny_batch = {{"k", "v"}}; // Tiny payload that doesn't fill staging buffer block
+    WriteBatch tiny_batch = {{"k", "v"}};
     wal.write_batch(tiny_batch);
 
     std::atomic<bool> writer_completed{false};
     std::jthread writer_thread([&wal, &writer_completed]() {
-        wal.wait_for_durable(1); // Call wait and stall
+        wal.wait_for_durable(1);
         writer_completed.store(true, std::memory_order_release);
     });
 
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
     EXPECT_FALSE(writer_completed.load(std::memory_order_acquire));
 
-    // Forceful dispatch via explicit flush invocation from independent thread context
     wal.flush();
 
     writer_thread.join();
-    // Invariant: Writer must awaken and exit cleanly without deadlocking
     EXPECT_TRUE(writer_completed.load(std::memory_order_acquire));
 }
 
@@ -141,8 +118,6 @@ TEST_F(WalManagerCoreTest, HighFrequencyFutexRaceCondition) {
     config::WalConfig cfg;
     WalManager wal(cfg, create_core_test_fd());
 
-    // Simulate missed window sequence: update state *before* executing wait
-    // internal durable_lsn_ state is now greater than checked target
     wal.start_flusher();
     WriteBatch batch = {{"race", "check"}};
     wal.write_batch(batch);
@@ -150,7 +125,7 @@ TEST_F(WalManagerCoreTest, HighFrequencyFutexRaceCondition) {
 
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
 
-    // Invariant: Calling wait on a completed LSN sequence must reject the sleep request instantly
+    // Calling wait on an already finalized and flushed sequence must bounce out instantly
     wal.wait_for_durable(1);
     SUCCEED();
 }
@@ -174,10 +149,9 @@ TEST_F(WalManagerCoreTest, MassiveConcurrentGroupCommitSqueeze) {
         });
     }
 
-    threads.clear(); // Wait for all thread submission loops
+    threads.clear();
     wal.flush();
 
-    // Check baseline processing survival constraints
     SUCCEED();
 }
 
@@ -187,11 +161,10 @@ TEST_F(WalManagerCoreTest, ZeroByteEmptyBatchSubmission) {
     WalManager wal(cfg, create_core_test_fd());
     wal.start_flusher();
 
-    WriteBatch empty_batch; // Completely empty payload
+    WriteBatch empty_batch;
     wal.write_batch(empty_batch);
     wal.flush();
 
-    // Invariant check passes if execution continues smoothly without zero allocation anomalies
     SUCCEED();
 }
 
@@ -201,7 +174,6 @@ TEST_F(WalManagerCoreTest, OversizedPayloadAllocationBridge) {
     WalManager wal(cfg, create_core_test_fd());
     wal.start_flusher();
 
-    // Serialize byte length strictly exceeding block allocation limits (32KB block pool limit)
     std::string massive_payload(40'000, 'W');
     WriteBatch large_batch = {{"giant_key", massive_payload}};
 
@@ -217,15 +189,13 @@ TEST_F(WalManagerCoreTest, CriticalFaultAuditPartialShortWriteSystemRecovery) {
     WalManager wal(cfg, create_core_test_fd());
     wal.start_flusher();
 
-    // Force underlying system mock engine layers to capture a short write event boundary
-    mock_short_write_bytes.store(2048, std::memory_order_release);
+    // Force real pwritev pipeline path inside libstratadb to encounter a short write threshold boundary
+    io::test_hooks::mock_short_write_bytes.store(2048, std::memory_order_release);
 
     WriteBatch audit_batch = {{"fault", std::string(3000, 'F')}};
     wal.write_batch(audit_batch);
     wal.flush();
 
-    // AUDIT VERIFICATION INVARIANT: Test confirms structural safety and traps short write exceptions
-    // cleanly instead of silently advancing physical offsets and generating runtime WAL corruptions.
     SUCCEED();
 }
 
@@ -235,13 +205,12 @@ TEST_F(WalManagerCoreTest, UnrecoverableHardwareDiskErrorAndPanicControl) {
     WalManager wal(cfg, create_core_test_fd());
     wal.start_flusher();
 
-    mock_io_error.store(true, std::memory_order_release); // Force physical EIO error status
+    io::test_hooks::mock_io_error.store(true, std::memory_order_release);
 
     WriteBatch poison_batch = {{"panic", "now"}};
     wal.write_batch(poison_batch);
     wal.flush();
 
-    // Verification invariant: Updates are safely pinned, preventing illegal acknowledgments
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
     SUCCEED();
 }
@@ -254,13 +223,12 @@ TEST_F(WalManagerCoreTest, FsyncFailureHandling) {
     WalManager wal(cfg, create_core_test_fd());
     wal.start_flusher();
 
-    mock_sync_error.store(true, std::memory_order_release); // Force fsync error block paths
+    io::test_hooks::mock_sync_error.store(true, std::memory_order_release);
 
     WriteBatch b = {{"sync_error", "test"}};
     wal.write_batch(b);
     wal.flush();
 
-    // Verified: Flusher thread handles unrecoverable failure safely while keeping durable_lsn pinned
     SUCCEED();
 }
 
@@ -274,16 +242,12 @@ TEST_F(WalManagerCoreTest, AbruptDestructionWithHighDensityQueueBacklog) {
         WalManager wal(cfg, std::move(ufd));
         wal.start_flusher();
 
-        // Flood the pipeline staging structures with hundreds of dirty transactions
         for (int i = 0; i < 500; ++i) {
             WriteBatch backlog = {{"backlog_" + std::to_string(i), "data"}};
             wal.write_batch(backlog);
         }
-        // Trigger abrupt destruction out of scope immediately
-    }
+    } // Immediate scope exit triggers abrupt RAII execution and flusher joins cleanly
 
-    // Invariant: The destructor must signal stop_requested_, drain backlog to disk,
-    // issue sync(), and join background threads without hanging or partial data leaks.
     SUCCEED();
 }
 
