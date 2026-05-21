@@ -70,7 +70,7 @@ struct alignas(4096) GammaBlock {
 
         header.record_count++;
 
-        append_offset_ = (append_offset_ + 7) & ~7ULL; // Align to 8 bytes
+        append_offset_ = (append_offset_ + 7U) & ~static_cast<std::size_t>(7U); // Align to 8 bytes
 
         if (append_offset_ > BlockSize)
             append_offset_ = BlockSize; // Safety check to prevent overflow
