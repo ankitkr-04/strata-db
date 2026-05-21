@@ -8,11 +8,13 @@ namespace stratadb::wal {
 WalManager::~WalManager() {
     stop_requested_.store(true, std::memory_order_release);
 
-    // If you just need to wake up a thread sleeping on a futex/conditional inside the queue,
-    // ensure you aren't racing with ongoing thread-local operations.
-    std::visit([](auto& active_pipeline) -> auto { active_pipeline.flush_pipeline(); }, pipeline_);
+    // Seal any remaining staged blocks, then wake the flusher directly.
+    // Do NOT call flush_pipeline() here — it pushes a sentinel node that may
+    // already be at head_ of the queue, creating a self-loop.
+    std::visit([](auto& p) -> auto { p.shutdown(); }, pipeline_);
 
-    stop_requested_.notify_all();
+    // stop_requested_.notify_all() removed: nothing waits on stop_requested_ directly.
+    // The flusher wakes via force_wakeup() above, then sees stop_requested_ = true and exits.
 }
 
 void WalManager::start_flusher() {

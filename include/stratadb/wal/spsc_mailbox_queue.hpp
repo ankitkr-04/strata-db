@@ -101,6 +101,11 @@ class SpscMailboxQueue {
         // idle.
     }
 
+    void force_wakeup() noexcept {
+        // No-op for this design since the Flusher thread is always actively sweeping. If we had a more traditional
+        // blocking design, we would need to implement a wakeup mechanism here.
+    }
+
   private:
     // Array of 256 physically isolated ring buffers
     SpscRingBuffer<256> mailboxes_[utils::MAX_SUPPORTED_THREADS];

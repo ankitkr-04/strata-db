@@ -25,6 +25,7 @@ concept ConcurrencyQueue = requires(T q, MpscNode* node) {
     { q.push(node) } -> std::same_as<void>;
     { q.pop() } -> std::same_as<PopResultData>;
     { q.wait_for_work(std::declval<std::atomic<bool>&>()) } -> std::same_as<void>;
+    { q.force_wakeup() } -> std::same_as<void>;
 };
 
 // Represents the state of a partial flush for O_DIRECT RMW

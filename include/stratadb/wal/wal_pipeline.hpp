@@ -63,6 +63,19 @@ class WalPipeline {
         const std::size_t tid = get_dense_thread_index() % utils::MAX_SUPPORTED_THREADS;
         handoff_queue_.push(&per_thread_sentinels_[tid]);
     }
+    // Seals remaining active blocks and wakes the consumer.
+    // Called ONLY from WalManager destructor. Does NOT push any node.
+    void shutdown() noexcept {
+        // 1. Seal and dispatch any active blocks to ensure all data is flushed before shutdown. This also helps to wake
+        // the Flusher thread if it's sleeping, ensuring it can process the shutdown nodes and exit gracefully.
+        for (std::size_t i = 0; i < utils::MAX_SUPPORTED_THREADS; ++i) {
+            if (!active_blocks_[i].empty()) {
+                seal_and_dispatch(i);
+            }
+        }
+
+        handoff_queue_.force_wakeup(); // Wake the Flusher to ensure it processes the shutdown nodes promptly
+    }
 
   private:
     Queue handoff_queue_;

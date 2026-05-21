@@ -77,7 +77,6 @@ class VyukovMpscQueue {
         return {.payload_node = nullptr, .node_to_free = nullptr};
     }
 
-    
     // --- CONSUMER POWER MANAGEMENT ---
     // Called by the flusher when `pop()` returns nullptr.
     void wait_for_work(std::atomic<bool>& stop_requested) noexcept {
@@ -85,8 +84,8 @@ class VyukovMpscQueue {
 
         // Double check to prevent a race condition where a producer pushed
         // right before we set the sleeping flag, or if shutdown was requested.
-        if (head_.load(std::memory_order_relaxed)->next.load(std::memory_order_acquire) != nullptr ||
-            stop_requested.load(std::memory_order_acquire)) {
+        if (head_.load(std::memory_order_relaxed)->next.load(std::memory_order_acquire) != nullptr
+            || stop_requested.load(std::memory_order_acquire)) {
             consumer_sleeping_.store(false, std::memory_order_relaxed);
             return;
         }
@@ -94,6 +93,16 @@ class VyukovMpscQueue {
         // Sleep on the futex natively via C++20 until a producer calls consumer_sleeping_.notify_one()
         consumer_sleeping_.wait(true, std::memory_order_relaxed);
         consumer_sleeping_.store(false, std::memory_order_relaxed); // ← reset after wakeup
+    }
+
+    void force_wakeup() noexcept {
+        // In this design, the Flusher thread is always actively sweeping and never truly sleeps. However, if we had a
+        // more traditional blocking design, we would need to implement a wakeup mechanism here to interrupt the sleep
+        // when new work arrives or during shutdown.
+        if (consumer_sleeping_.load(std::memory_order_seq_cst)) {
+            consumer_sleeping_.store(false, std::memory_order_relaxed);
+            consumer_sleeping_.notify_one();
+        }
     }
 
   private:
