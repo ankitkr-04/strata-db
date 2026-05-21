@@ -29,5 +29,7 @@ class PosixIoEngine {
     io::IOCapabilities caps_;
 };
 
+static_assert(sizeof(off_t) >= sizeof(uint64_t),
+              "off_t is too narrow for 64-bit file offsets; compile with -D_FILE_OFFSET_BITS=64");
 static_assert(io::IoEngineConcept<PosixIoEngine>, "PosixIoEngine does not satisfy IoEngineConcept");
 }; // namespace stratadb::io
