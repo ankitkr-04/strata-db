@@ -6,12 +6,11 @@
 #include <cstddef>
 
 namespace stratadb::config {
-using namespace stratadb::utils::bytes::literals;
 
 struct MemoryConfig {
 
-    static constexpr std::size_t DEFAULT_TOTAL_BUDGET = 1_GiB;
-    static constexpr std::size_t DEFAULT_TLAB_SIZE = 32_MiB;
+    static constexpr std::size_t DEFAULT_TOTAL_BUDGET = 1 * stratadb::utils::bytes::GiB;
+    static constexpr std::size_t DEFAULT_TLAB_SIZE = 32 * stratadb::utils::bytes::MiB;
     // Intentionally independent from ImmutableConfig::DEFAULT_BLOCK_SIZE_BYTES.
     // This controls allocator alignment, not SSTable block layout.
     // 0 signifies autodetect, will query system page size at initialization and align to that if possible.

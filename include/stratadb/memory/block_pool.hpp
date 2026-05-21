@@ -9,14 +9,13 @@
 #include <span>
 
 namespace stratadb::memory {
-using namespace stratadb::utils::bytes::literals;
 class BlockPool {
 
   public:
-    static constexpr size_t BLOCK_SIZE = 32_KiB; // 32KB blocks
-    static constexpr size_t CAPACITY = 16384;    // 2^14 blocks -> 256MB total
+    static constexpr size_t BLOCK_SIZE = 32 * stratadb::utils::bytes::KiB; // 32KB blocks
+    static constexpr size_t CAPACITY = 16384;                              // 2^14 blocks -> 256MB total
     static constexpr size_t INDEX_MASK = CAPACITY - 1;
-    static constexpr size_t PAYLOAD_ARRAY_SIZE = 4_KiB;
+    static constexpr size_t PAYLOAD_ARRAY_SIZE = 4 * stratadb::utils::bytes::KiB;
 
     BlockPool();
     ~BlockPool();

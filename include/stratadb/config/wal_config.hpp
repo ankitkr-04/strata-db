@@ -7,7 +7,6 @@
 #include <cstddef>
 
 namespace stratadb::config {
-using namespace stratadb::utils::bytes::literals;
 using namespace std::chrono_literals;
 
 enum class SpscMode : std::uint8_t {
@@ -18,7 +17,7 @@ enum class SpscMode : std::uint8_t {
 struct WalConfig {
 
     // How much data WAL can stage in the BlockPool before blocking writers.
-    static constexpr std::size_t DEFAULT_MAX_STAGING_BYTES = 128_MiB;
+    static constexpr std::size_t DEFAULT_MAX_STAGING_BYTES = 128 * stratadb::utils::bytes::MiB;
 
     // --- MECHANISM ---
     // The I/O policy specifically applied to the WAL's file descriptor.
