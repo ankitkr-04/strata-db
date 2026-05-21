@@ -3,7 +3,14 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+
+#if defined(__x86_64__) || defined(_M_X64)
 #include <nmmintrin.h>
+#define STRATADB_CRC32_HW 1
+#elif defined(__aarch64__)
+#include <arm_acle.h>
+#define STRATADB_CRC32_HW 1
+#endif
 
 namespace stratadb::utils {
 [[nodiscard]]
