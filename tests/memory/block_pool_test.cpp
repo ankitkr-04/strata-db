@@ -128,7 +128,7 @@ TEST_F(BlockPoolTest, PointerToIDMappingBoundaryVerification) {
     }
 
     // Sort to identify absolute base bounds
-    std::sort(blocks.begin(), blocks.end(), [](const auto& a, const auto& b) { return a.data() < b.data(); });
+    std::ranges::sort(blocks, [](const auto& a, const auto& b) -> auto { return a.data() < b.data(); });
 
     auto boundary_a = blocks.front(); // First byte of block 0
     auto boundary_b = blocks.back();  // First byte of final block 16383
