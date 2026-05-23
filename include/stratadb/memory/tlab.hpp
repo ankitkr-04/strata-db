@@ -1,6 +1,6 @@
 #pragma once
 
-#include "stratadb/utils/math.hpp"
+#include "stratadb/utils/align.hpp"
 
 #include <bit>
 #include <cassert>
@@ -43,7 +43,7 @@ class TLAB {
         if (current_block_ != nullptr) {
             const auto current_ptr = reinterpret_cast<std::uintptr_t>(current_block_);
             const auto end_ptr = reinterpret_cast<std::uintptr_t>(block_end_);
-            const auto aligned_ptr = utils::align_up_pow2(current_ptr, alignment);
+            const auto aligned_ptr = utils::align_up(current_ptr, alignment);
 
             // Overflow here would imply a mapping at the edge of virtual address space.
             if (aligned_ptr >= current_ptr && aligned_ptr <= end_ptr) [[likely]] {

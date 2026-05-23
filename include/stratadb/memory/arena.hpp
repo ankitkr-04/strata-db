@@ -1,6 +1,6 @@
 #pragma once
 #include "stratadb/config/memory_config.hpp"
-#include "stratadb/utils/hardware.hpp"
+#include "stratadb/utils/cache.hpp"
 
 #include <atomic>
 #include <cstddef>
@@ -22,9 +22,9 @@ class Arena {
 
     ~Arena() noexcept;
     Arena(const Arena&) = delete;
-    Arena& operator=(const Arena&) = delete;
+    auto operator=(const Arena&) -> Arena& = delete;
     Arena(Arena&& other) noexcept;
-    Arena& operator=(Arena&& other) noexcept;
+    auto operator=(Arena&& other) noexcept -> Arena&;
 
     [[nodiscard]] auto allocate_block(std::size_t min_size) noexcept -> std::span<std::byte>;
     [[nodiscard]] auto allocate_aligned(std::size_t size, std::size_t alignment) noexcept -> void*;
