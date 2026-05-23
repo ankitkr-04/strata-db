@@ -1,11 +1,11 @@
 #pragma once
 
+#include "io_types.hpp"
 #include "stratadb/utils/os.hpp"
 
 #include <utility>
 
 namespace stratadb::io {
-using FileHandle = int;
 class UniqueFd {
   public:
     constexpr UniqueFd() noexcept = default;

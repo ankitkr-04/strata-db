@@ -1,10 +1,10 @@
 #pragma once
+#include "stratadb/io/io_types.hpp"
+
 #include <cstddef>
 #include <cstdint>
 
 namespace stratadb::io {
-
-enum class IOError : std::uint8_t { AlignmentViolation, HardwareError, DeviceFull, UnknownError };
 
 struct IOCapabilities {
     std::size_t logical_sector_size;  // Minimum I/O unit size (e.g., 512 bytes)

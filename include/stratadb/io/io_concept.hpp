@@ -1,6 +1,7 @@
 #pragma once
 
 #include "io_capabilities.hpp"
+#include "io_types.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -9,7 +10,6 @@
 #include <sys/uio.h>
 
 namespace stratadb::io {
-using FileHandle = int; // Alias for file descriptor type
 
 template <typename T>
 concept IoEngineConcept = requires(T engine,
