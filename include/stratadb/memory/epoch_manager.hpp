@@ -1,6 +1,7 @@
 #pragma once
 
-#include "stratadb/utils/hardware.hpp"
+#include "stratadb/utils/cache.hpp"
+#include "stratadb/utils/limits.hpp"
 
 #include <array>
 #include <atomic>
