@@ -107,6 +107,7 @@ add_library(stratadb STATIC
   src/wal/wal_manager.cpp
   src/wal/wal_hash.cpp
   src/utils/simd.cpp
+  src/memory/virtual_region.cpp
 )
 
 target_include_directories(stratadb PUBLIC include PRIVATE src)

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "stratadb/config/immutable/memory_config.hpp"
+#include "stratadb/memory/virtual_region.hpp"
 #include "stratadb/utils/cache.hpp"
 
 #include <atomic>
@@ -11,21 +12,14 @@
 
 namespace stratadb::memory {
 
-enum class ArenaError : std::uint8_t {
-    MmapFailed,
-    OutOfMemory,
-    MbindFailed,
-    MunmapFailed,
-};
-
 class Arena {
   public:
-    // ConfigResolver must be called before Arena::create so that all sentinel
-    // fields in MemoryConfig are populated. Passing an unresolved config is a
-    // programming error and will be caught by internal debug assertions.
+    explicit Arena(VirtualRegion region, const config::MemoryConfig& cfg) noexcept;
+
+    // Helper wrapper for the standard runtime startup path.
     [[nodiscard]] static auto create(const config::MemoryConfig& cfg) noexcept -> std::expected<Arena, ArenaError>;
 
-    ~Arena() noexcept;
+    ~Arena() noexcept = default;
     Arena(const Arena&) = delete;
     auto operator=(const Arena&) -> Arena& = delete;
     Arena(Arena&& other) noexcept;
@@ -34,9 +28,6 @@ class Arena {
     [[nodiscard]] auto allocate_block(std::size_t min_size) noexcept -> std::span<std::byte>;
     [[nodiscard]] auto allocate_aligned(std::size_t size, std::size_t alignment) noexcept -> void*;
 
-    // WARNING: caller must ensure no live TLAB still references this Arena.
-    // Any string_view previously returned from memtable get()/scan() into this
-    // Arena becomes invalid after reset().
     void reset() noexcept;
 
     [[nodiscard]] auto capacity() const noexcept -> std::size_t {
@@ -57,14 +48,15 @@ class Arena {
     [[nodiscard]] auto remaining() const noexcept -> std::size_t {
         return capacity() - memory_used();
     }
+    [[nodiscard]] auto base_region() const noexcept -> const VirtualRegion& {
+        return region_;
+    }
 
   private:
-    explicit Arena(std::byte* base, const config::MemoryConfig& cfg) noexcept;
-
     [[nodiscard]] auto bump_allocate(std::size_t size, std::size_t alignment) noexcept -> std::size_t;
 
   private:
-    std::byte* base_{nullptr};
+    VirtualRegion region_;
     config::MemoryConfig config_{};
     std::size_t large_alloc_threshold_bytes_{0};
     alignas(stratadb::utils::CACHE_LINE_SIZE) std::atomic<std::size_t> offset_{0};
