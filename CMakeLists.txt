@@ -95,6 +95,7 @@ endfunction()
 add_library(stratadb STATIC
   src/memory/epoch_manager.cpp
   src/config/config_manager.cpp
+  src/config/config_resolver.cpp
   src/memory/arena.cpp
   src/memory/tlab.cpp
   src/memtable/skiplist_node.cpp
