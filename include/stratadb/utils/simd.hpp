@@ -64,6 +64,7 @@ void init() noexcept;
 ///
 /// Returns a bitmask of which sectors passed, plus the index of the first
 /// failure for fast torn-write boundary detection.
+/// sector_count must be <= 64 (limited by valid_sector_mask width).
 
 [[nodiscard]] auto validate_sector_checksums(const uint8_t* sector_data,
                                              uint8_t sector_count,

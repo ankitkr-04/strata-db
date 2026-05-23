@@ -109,7 +109,7 @@ void init() noexcept {
                                              uint8_t sector_count,
                                              const uint32_t* expected_checksums) noexcept -> SectorValidationResult {
 
-    assert(sector_count <= 32);
+    assert(sector_count <= 64); 
 
     SectorValidationResult result{};
     result.all_valid = true;
