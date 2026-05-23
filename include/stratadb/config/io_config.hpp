@@ -30,8 +30,7 @@ struct IOConfig {
     // Both WAL and SSTable instances of the IoEngine need this.
     std::size_t uring_queue_depth{512};
 
-    // If > 0, tells the Linux kernel to spawn a dedicated SQPOLL thread.
-    // This allows the database to submit I/O with ZERO syscall context switches.
+    // If set, enables io_uring's SQPOLL mode with the specified idle timeout.
     std::optional<std::chrono::milliseconds> uring_sqpoll_idle{std::nullopt};
 
     // Bypasses kernel virtual memory mapping overhead during hot-path I/O.
