@@ -1,5 +1,6 @@
 #include "stratadb/memory/arena.hpp"
-#include "stratadb/utils/hardware.hpp"
+#include "stratadb/utils/cache.hpp"
+#include "stratadb/utils/probe.hpp"
 
 #include <atomic>
 #include <gtest/gtest.h>

@@ -23,8 +23,10 @@ thread_local std::array<std::size_t, MAX_DB_INSTANCES> tl_epoch_slots = [] {
 
 } // namespace
 
-EpochManager::EpochManager() noexcept
-    : instance_id_(global_instance_counter.fetch_add(1, std::memory_order_relaxed)) {
+EpochManager::EpochManager(const config::EpochConfig& cfg) noexcept
+    : config_(cfg)
+    , reclaim_interval_mask_(cfg.reclaim_interval - 1)
+    , instance_id_(global_instance_counter.fetch_add(1, std::memory_order_relaxed)) {
 
     if (instance_id_ >= MAX_DB_INSTANCES) {
         std::fputs("EpochManager instance limit exceeded\n", stderr);
@@ -73,7 +75,7 @@ auto EpochManager::register_thread() noexcept -> std::expected<void, EpochError>
     return std::unexpected(EpochError::ThreadLimitExceeded);
 }
 
-void EpochManager::unregister_thread() {
+void EpochManager::unregister_thread() noexcept {
     const std::size_t slot = my_thread_index();
     assert(slot != INVALID_THREAD);
 
@@ -157,18 +159,18 @@ void EpochManager::retire_node(void* ptr, void (*deleter)(void*)) noexcept {
 
     const std::size_t total_retired = state.slab_count + state.overflow_count;
 
-    if ((total_retired & RECLAIM_INTERVAL_MASK) == 0) [[unlikely]] {
+    if ((total_retired & reclaim_interval_mask_) == 0) [[unlikely]] {
         try_advance_epoch();
         reclaim();
 
         static thread_local std::uint32_t backoff_us = 1;
         // Backpressure: if too many unreclaimed nodes, yield to give other threads a chance to reclaim
-        if (total_retired > RETIRE_LIST_THRESHOLD) [[unlikely]] {
+        if (total_retired > config_.retire_list_threshold) [[unlikely]] {
 
             std::this_thread::sleep_for(std::chrono::microseconds(backoff_us));
-            backoff_us = std::min(backoff_us * 2u, 1000u); // cap backoff at 1ms
+            backoff_us = std::min(backoff_us * 2u, config_.backoff_max_us); // cap backoff at 1ms
 
-            if (total_retired > RETIRE_LIST_THRESHOLD * 4) {
+            if (total_retired > config_.retire_list_threshold * 4) {
                 reclaim(); // if still too high, do a synchronous reclaim before yielding again
             }
 
