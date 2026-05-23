@@ -8,16 +8,25 @@
 #include <cstdint>
 
 namespace stratadb::memory {
-class Arena;
-static constexpr std::size_t LARGE_ALLOC_TLAB_FRACTION = 2;
 
+class Arena;
+
+// Thread-Local Allocation Buffer.
+//
+// Fast-path allocations bump a pointer within the current block; slow-path
+// requests a fresh block from the Arena.
+//
+// The threshold below which an allocation goes through the TLAB (rather than
+// directly to the Arena) is determined by Arena::large_alloc_fraction(), which
+// in turn comes from MemoryConfig::large_alloc_tlab_fraction (resolved by
+// ConfigResolver). TLAB itself owns no policy constants.
 class TLAB {
   public:
     explicit TLAB(Arena& arena) noexcept;
 
     TLAB(const TLAB&) = delete;
-    auto operator=(const TLAB&) -> TLAB& = delete;
     TLAB(TLAB&&) = delete;
+    auto operator=(const TLAB&) -> TLAB& = delete;
     auto operator=(TLAB&&) -> TLAB& = delete;
     ~TLAB() noexcept = default;
 
@@ -45,20 +54,15 @@ class TLAB {
             const auto end_ptr = reinterpret_cast<std::uintptr_t>(block_end_);
             const auto aligned_ptr = utils::align_up(current_ptr, alignment);
 
-            // Overflow here would imply a mapping at the edge of virtual address space.
             if (aligned_ptr >= current_ptr && aligned_ptr <= end_ptr) [[likely]] {
                 const auto remaining = end_ptr - aligned_ptr;
                 if (remaining >= size) [[likely]] {
-                    const auto new_current = aligned_ptr + size;
-
                     // NOLINTBEGIN(performance-no-int-to-ptr)
-                    current_block_ = reinterpret_cast<std::byte*>(new_current);
+                    current_block_ = reinterpret_cast<std::byte*>(aligned_ptr + size);
                     return reinterpret_cast<void*>(aligned_ptr);
                     // NOLINTEND(performance-no-int-to-ptr)
                 }
             }
-
-            return allocate_slow(size, alignment);
         }
 
         return allocate_slow(size, alignment);
@@ -73,4 +77,5 @@ class TLAB {
     std::byte* block_end_{nullptr};
     Arena* arena_{nullptr};
 };
+
 } // namespace stratadb::memory

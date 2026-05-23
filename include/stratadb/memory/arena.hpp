@@ -48,6 +48,9 @@ class Arena {
     [[nodiscard]] auto large_alloc_fraction() const noexcept -> std::size_t {
         return config_.large_alloc_tlab_fraction;
     }
+    [[nodiscard]] auto large_alloc_threshold() const noexcept -> std::size_t {
+        return large_alloc_threshold_bytes_;
+    }
     [[nodiscard]] auto memory_used() const noexcept -> std::size_t {
         return offset_.load(std::memory_order_relaxed);
     }
@@ -63,7 +66,7 @@ class Arena {
   private:
     std::byte* base_{nullptr};
     config::MemoryConfig config_{};
-
+    std::size_t large_alloc_threshold_bytes_{0};
     alignas(stratadb::utils::CACHE_LINE_SIZE) std::atomic<std::size_t> offset_{0};
 };
 
