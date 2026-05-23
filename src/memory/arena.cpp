@@ -1,232 +1,70 @@
-#include "stratadb/memory/arena.hpp"
+#pragma once
 
-#include "stratadb/utils/math.hpp"
+#include "stratadb/config/immutable/memory_config.hpp"
+#include "stratadb/utils/cache.hpp"
 
-#include <bit>
-#include <cassert>
-#include <cerrno>
-#include <cstring>
-#include <limits>
-#include <numa.h>
-#include <numaif.h>
-#include <sys/mman.h>
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
+#include <expected>
+#include <span>
+
 namespace stratadb::memory {
-namespace {
 
-// Extract macros to seperate place
-#if defined(MAP_HUGETLB)
-constexpr int OS_MAP_HUGE_2MB = MAP_HUGETLB | MAP_HUGE_2MB;
-constexpr int OS_MAP_HUGE_1GB = MAP_HUGETLB | MAP_HUGE_1GB;
-#else
-// Fallbacks for macOS/Windows/Embedded where HugePages aren't supported via mmap
-constexpr int OS_MAP_HUGE_2MB = 0;
-constexpr int OS_MAP_HUGE_1GB = 0;
-#endif
+enum class ArenaError : std::uint8_t {
+    MmapFailed,
+    OutOfMemory,
+    MbindFailed,
+    MunmapFailed,
+};
 
-auto try_mmap(std::size_t size, int flags) noexcept -> void* {
-    void* ptr = mmap(nullptr, size, PROT_READ | PROT_WRITE, flags, -1, 0);
-    return (ptr == MAP_FAILED) ? nullptr : ptr;
-}
+class Arena {
+  public:
+    // ConfigResolver must be called before Arena::create so that all sentinel
+    // fields in MemoryConfig are populated. Passing an unresolved config is a
+    // programming error and will be caught by internal debug assertions.
+    [[nodiscard]] static auto create(const config::MemoryConfig& cfg) noexcept -> std::expected<Arena, ArenaError>;
 
-// fallback chain executor
-auto try_sequence(std::size_t total, int base_flags, std::initializer_list<int> flags_list) noexcept -> void* {
-    for (int flags : flags_list) {
-        if (void* p = try_mmap(total, base_flags | flags)) {
-            return p;
-        }
+    ~Arena() noexcept;
+    Arena(const Arena&) = delete;
+    auto operator=(const Arena&) -> Arena& = delete;
+    Arena(Arena&& other) noexcept;
+    auto operator=(Arena&& other) noexcept -> Arena&;
+
+    [[nodiscard]] auto allocate_block(std::size_t min_size) noexcept -> std::span<std::byte>;
+    [[nodiscard]] auto allocate_aligned(std::size_t size, std::size_t alignment) noexcept -> void*;
+
+    // WARNING: caller must ensure no live TLAB still references this Arena.
+    // Any string_view previously returned from memtable get()/scan() into this
+    // Arena becomes invalid after reset().
+    void reset() noexcept;
+
+    [[nodiscard]] auto capacity() const noexcept -> std::size_t {
+        return config_.total_budget_bytes;
     }
-    return nullptr;
-}
-
-// NUMA policy application
-auto apply_numa_policy(void* ptr, std::size_t total, config::NumaPolicy policy) noexcept -> bool {
-    constexpr unsigned long kFlags = MPOL_MF_STRICT | MPOL_MF_MOVE;
-
-    switch (policy) {
-        case config::NumaPolicy::UMA:
-            return true;
-
-        case config::NumaPolicy::Interleaved: {
-            // fix sparse topology
-            struct bitmask* nodes = numa_get_mems_allowed();
-            if (!nodes) {
-                return false;
-            }
-
-            const long result = mbind(ptr, total, MPOL_INTERLEAVE, nodes->maskp, nodes->size + 1, kFlags);
-            numa_bitmask_free(nodes);
-            return result == 0;
-        }
-
-        case config::NumaPolicy::StrictLocal:
-            return mbind(ptr, total, MPOL_LOCAL, nullptr, 0, kFlags) == 0;
+    [[nodiscard]] auto tlab_size() const noexcept -> std::size_t {
+        return config_.tlab_size_bytes;
     }
-    return false;
-}
-
-// optional prefault
-inline void prefault_memory(void* ptr, std::size_t size) noexcept {
-    std::memset(ptr, 0, size);
-}
-
-} // namespace
-
-Arena::Arena(std::byte* base, const config::MemoryConfig& config) noexcept
-    : base_(base)
-    , config_(config) {}
-
-Arena::~Arena() noexcept {
-    if (base_) {
-        munmap(base_, config_.total_budget_bytes);
+    [[nodiscard]] auto large_alloc_fraction() const noexcept -> std::size_t {
+        return config_.large_alloc_tlab_fraction;
     }
-}
-
-Arena::Arena(Arena&& other) noexcept
-    : base_(other.base_)
-    , config_(other.config_) {
-    offset_.store(other.offset_.load(std::memory_order_relaxed), std::memory_order_relaxed);
-    other.base_ = nullptr;
-    other.offset_.store(0, std::memory_order_relaxed);
-    other.config_.total_budget_bytes = 0;
-}
-
-auto Arena::operator=(Arena&& other) noexcept -> Arena& {
-    if (this != &other) {
-        if (base_) {
-            munmap(base_, config_.total_budget_bytes);
-        }
-        base_ = other.base_;
-        config_ = other.config_;
-        offset_.store(other.offset_.load(std::memory_order_relaxed), std::memory_order_relaxed);
-
-        other.base_ = nullptr;
-        other.offset_.store(0, std::memory_order_relaxed);
-        other.config_.total_budget_bytes = 0;
+    [[nodiscard]] auto memory_used() const noexcept -> std::size_t {
+        return offset_.load(std::memory_order_relaxed);
     }
-    return *this;
-}
-
-auto Arena::create(const config::MemoryConfig& config) noexcept -> std::expected<Arena, ArenaError> {
-
-    // effective config (runtime truth)
-    config::MemoryConfig effective_config = config;
-    if (effective_config.block_alignment_bytes == 0) {
-        effective_config.block_alignment_bytes = std::bit_ceil(utils::system_page_size());
+    [[nodiscard]] auto remaining() const noexcept -> std::size_t {
+        return capacity() - memory_used();
     }
 
-    const std::size_t total = effective_config.total_budget_bytes;
-    const auto page_strategy = effective_config.page_strategy;
+  private:
+    explicit Arena(std::byte* base, const config::MemoryConfig& cfg) noexcept;
 
-    constexpr int base_flags = MAP_PRIVATE | MAP_ANONYMOUS;
+    [[nodiscard]] auto bump_allocate(std::size_t size, std::size_t alignment) noexcept -> std::size_t;
 
-    void* ptr = nullptr;
-    switch (page_strategy) {
-        case config::PageStrategy::Standard4K:
-            ptr = try_sequence(total, base_flags, {0});
-            break;
+  private:
+    std::byte* base_{nullptr};
+    config::MemoryConfig config_{};
 
-        case config::PageStrategy::Huge2M_Opportunistic:
-            ptr = try_sequence(total, base_flags, {OS_MAP_HUGE_2MB, 0});
-            break;
-
-        case config::PageStrategy::Huge2M_Strict:
-            ptr = try_sequence(total, base_flags, {OS_MAP_HUGE_2MB});
-            if (!ptr)
-                return std::unexpected(ArenaError::MmapFailed);
-            break;
-
-        case config::PageStrategy::Huge1G_Opportunistic:
-            ptr = try_sequence(total, base_flags, {OS_MAP_HUGE_1GB, OS_MAP_HUGE_2MB, 0});
-            break;
-
-        case config::PageStrategy::Huge1G_Strict:
-            ptr = try_sequence(total, base_flags, {OS_MAP_HUGE_1GB});
-            if (!ptr)
-                return std::unexpected(ArenaError::MmapFailed);
-            break;
-    }
-
-    if (!ptr) {
-        if (errno == ENOMEM)
-            return std::unexpected(ArenaError::OutOfMemory);
-        return std::unexpected(ArenaError::MmapFailed);
-    }
-
-    // apply NUMA policy (truthful + fallback)
-    if (!apply_numa_policy(ptr, total, effective_config.numa_policy)) {
-        if (effective_config.numa_policy == config::NumaPolicy::StrictLocal) {
-            munmap(ptr, total);
-            return std::unexpected(ArenaError::MbindFailed);
-        }
-        // fallback → record actual behavior
-        effective_config.numa_policy = config::NumaPolicy::UMA;
-    }
-
-    // optional prefault
-    if (effective_config.prefault_on_init) {
-        prefault_memory(ptr, total);
-    }
-
-    return Arena(reinterpret_cast<std::byte*>(ptr), effective_config);
-}
-
-// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
-auto Arena::bump_allocate(std::size_t size, std::size_t alignment) noexcept -> std::size_t {
-    if (!base_ || !std::has_single_bit(alignment)) [[unlikely]] {
-        return std::numeric_limits<std::size_t>::max();
-    }
-
-    std::size_t old = offset_.load(std::memory_order_relaxed);
-
-    while (true) {
-        std::size_t aligned_offset = 0;
-        if (!utils::align_up_checked(old, alignment, aligned_offset)) [[unlikely]] {
-            return std::numeric_limits<std::size_t>::max();
-        }
-
-        if (config_.total_budget_bytes < size || aligned_offset > config_.total_budget_bytes - size) [[unlikely]] {
-            return std::numeric_limits<std::size_t>::max();
-        }
-
-        const std::size_t next = aligned_offset + size;
-        if (offset_.compare_exchange_weak(old, next, std::memory_order_release, std::memory_order_relaxed)) {
-            return aligned_offset;
-        }
-    }
-}
-
-auto Arena::allocate_block(std::size_t min_size) noexcept -> std::span<std::byte> {
-    std::size_t size = (min_size > config_.tlab_size_bytes) ? min_size : config_.tlab_size_bytes;
-
-    if (!utils::align_up_checked(size, config_.block_alignment_bytes, size)) [[unlikely]] {
-        return {};
-    }
-
-    const std::size_t aligned_offset = bump_allocate(size, config_.block_alignment_bytes);
-    if (aligned_offset == std::numeric_limits<std::size_t>::max()) [[unlikely]] {
-        return {};
-    }
-
-    return {base_ + aligned_offset, size};
-}
-
-// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
-auto Arena::allocate_aligned(std::size_t size, std::size_t alignment) noexcept -> void* {
-    assert(std::has_single_bit(alignment));
-    if (!std::has_single_bit(alignment)) [[unlikely]] {
-        return nullptr;
-    }
-
-    const std::size_t aligned_offset = bump_allocate(size, alignment);
-    if (aligned_offset == std::numeric_limits<std::size_t>::max()) [[unlikely]] {
-        return nullptr;
-    }
-
-    return base_ + aligned_offset;
-}
-
-auto Arena::reset() noexcept -> void {
-    offset_.store(0, std::memory_order_relaxed);
-}
+    alignas(stratadb::utils::CACHE_LINE_SIZE) std::atomic<std::size_t> offset_{0};
+};
 
 } // namespace stratadb::memory
