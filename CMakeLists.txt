@@ -104,8 +104,7 @@ add_library(stratadb STATIC
   src/utils/os.cpp
   src/memory/block_pool.cpp
   src/io/posix_io_engine.cpp
-  src/wal/wal_manager.cpp
-  src/wal/wal_hash.cpp
+  src/wal/manager.cpp
   src/utils/simd.cpp
   src/memory/virtual_region.cpp
 )
