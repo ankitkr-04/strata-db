@@ -49,11 +49,11 @@ struct WalConfig {
     // The number of pre-allocated, fdatasync'd files to maintain in the Ready state.
     // If our fixed Ring Buffer has 5 slots, this cannot exceed 3 (1 Active, 1 Creating, 3 Ready).
     // Defaulting to 2 absorbs virtually any realistic NVMe burst.
-    std::uint8_t precreate_ready_target{2};
+    std::uint8_t ready_file_count{2};
 
     // The capacity threshold (0.0 to 1.0) of the Active file that triggers the background
     // thread to wake up and replenish the Ready pool.
-    float precreate_watermark_ratio{0.75f};
+    float precreate_trigger_ratio{0.75f};
 };
 
 } // namespace stratadb::config
