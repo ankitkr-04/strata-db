@@ -1,20 +1,21 @@
 #pragma once
 
-#include "stratadb/config/memory_config.hpp"
-#include "stratadb/config/wal_config.hpp"
+#include "stratadb/config/immutable/memory_config.hpp"
+#include "stratadb/config/immutable/wal_config.hpp"
 
 #include <cstddef>
 
 namespace stratadb::config {
 
 struct ImmutableConfig {
-    static constexpr std::size_t DEFAULT_BLOCK_SIZE_BYTES = 4096;
+    // SSTable block encoding / decoding granularity.
+    // Independent of MemoryConfig::block_alignment_bytes (allocator alignment).
+    static constexpr std::size_t DEFAULT_BLOCK_SIZE_BYTES = 4096UZ;
 
-    // Owned by future SSTable block encoding/decoding components.
     std::size_t block_size_bytes{DEFAULT_BLOCK_SIZE_BYTES};
 
-    MemoryConfig memory_config{};
-    WalConfig wal_config{};
+    MemoryConfig memory{};
+    WalConfig wal{};
 };
 
 } // namespace stratadb::config

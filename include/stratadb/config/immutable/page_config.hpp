@@ -12,10 +12,4 @@ enum class PageStrategy : std::uint8_t {
     Huge1G_Strict         // Bleeding-edge bare-metal only.
 };
 
-enum class NumaPolicy : std::uint8_t {
-    UMA,         // Ignore NUMA, rely on OS scheduler.
-    Interleaved, // Striped allocation across nodes (predictable latency).
-    StrictLocal  // Pin threads & allocate strictly local to the node.
-};
-
 } // namespace stratadb::config
