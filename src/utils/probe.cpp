@@ -1,6 +1,4 @@
-#include "stratadb/utils/hardware.hpp"
-
-#include "stratadb/io/io_concept.hpp"
+#include "stratadb/utils/probe.hpp"
 
 #include <thread>
 

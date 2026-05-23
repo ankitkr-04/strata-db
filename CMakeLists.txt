@@ -99,7 +99,7 @@ add_library(stratadb STATIC
   src/memory/tlab.cpp
   src/memtable/skiplist_node.cpp
   src/memtable/skiplist_memtable.cpp
-  src/utils/hardware.cpp
+  src/utils/probe.cpp
   src/utils/os.cpp
   src/memory/block_pool.cpp
   src/io/posix_io_engine.cpp
