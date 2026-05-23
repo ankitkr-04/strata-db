@@ -1,6 +1,9 @@
 #pragma once
 
+#include "stratadb/config/immutable/block_pool_config.hpp"
+#include "stratadb/config/immutable/epoch_config.hpp"
 #include "stratadb/config/immutable/memory_config.hpp"
+#include "stratadb/config/immutable/skiplist_config.hpp"
 #include "stratadb/config/immutable/wal_config.hpp"
 
 #include <cstddef>
@@ -16,6 +19,9 @@ struct ImmutableConfig {
 
     MemoryConfig memory{};
     WalConfig wal{};
+    BlockPoolConfig block_pool{};
+    SkipListConfig skiplist{};
+    EpochConfig epoch{};
 };
 
 } // namespace stratadb::config
