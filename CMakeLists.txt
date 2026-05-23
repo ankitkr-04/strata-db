@@ -105,6 +105,7 @@ add_library(stratadb STATIC
   src/io/posix_io_engine.cpp
   src/wal/wal_manager.cpp
   src/wal/wal_hash.cpp
+  src/utils/simd.cpp
 )
 
 target_include_directories(stratadb PUBLIC include PRIVATE src)
