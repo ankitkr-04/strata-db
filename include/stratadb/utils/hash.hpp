@@ -14,6 +14,10 @@
 
 namespace stratadb::utils {
 
+// CRC-32C (Castagnoli polynomial). Hardware-accelerated on x86-64 (SSE4.2)
+// and AArch64 (ARMv8 CRC extension). Falls back to a software implementation
+// on unsupported architectures.
+
 #if defined(STRATADB_CRC32_ARCH_X86)
 
 [[nodiscard]]
@@ -51,6 +55,13 @@ __attribute__((target("sse4.2,crc32"))) inline auto crc32c(const void* data, std
 
 #elif defined(STRATADB_CRC32_ARCH_ARM)
 
+// ARM CRC extension (__crc32c*) — requires -march=armv8-a+crc or equivalent.
+// Compile-time feature check: if the CRC extension is not enabled, the
+// preprocessor will not define __ARM_FEATURE_CRC32 and we fall through to
+// the software path. The build system should set -march=armv8-a+crc on
+// AArch64 targets that are known to support it.
+#if defined(__ARM_FEATURE_CRC32)
+
 [[nodiscard]]
 inline auto crc32c(const void* data, std::size_t length) noexcept -> std::uint32_t {
     const auto* ptr = static_cast<const std::uint8_t*>(data);
@@ -83,26 +94,30 @@ inline auto crc32c(const void* data, std::size_t length) noexcept -> std::uint32
     return ~crc;
 }
 
-#else 
+#else // AArch64 without CRC extension — fall through to software below
+#define STRATADB_CRC32_SOFTWARE_FALLBACK 1
+#endif // __ARM_FEATURE_CRC32
+
+#else
+#define STRATADB_CRC32_SOFTWARE_FALLBACK 1
+#endif // arch detection
+
+#if defined(STRATADB_CRC32_SOFTWARE_FALLBACK)
+
+// Portable software CRC-32C. Correct on every architecture; ~3× slower than hw.
+// Table defined in hash.cpp to avoid duplicate-symbol errors across TUs.
+extern const std::uint32_t kCrc32cTable[256];
 
 [[nodiscard]]
 inline auto crc32c(const void* data, std::size_t length) noexcept -> std::uint32_t {
-    // Castagnoli polynomial (0x82F63B78 bit-reversed)
-    static constexpr std::uint32_t TABLE[256] = {
-        // generated via standard CRC-32C table construction
-        0x00000000U,
-        0xF26B8303U,
-        0xE13B70F7U,
-        0x1350F3F4U, /* ... full table ... */
-    };
     const auto* ptr = static_cast<const std::uint8_t*>(data);
     std::uint32_t crc = 0xFFFF'FFFFU;
     while (length-- > 0) {
-        crc = TABLE[(crc ^ *ptr++) & 0xFFU] ^ (crc >> 8);
+        crc = kCrc32cTable[(crc ^ *ptr++) & 0xFFU] ^ (crc >> 8);
     }
     return ~crc;
 }
 
-#endif
+#endif // STRATADB_CRC32_SOFTWARE_FALLBACK
 
 } // namespace stratadb::utils
