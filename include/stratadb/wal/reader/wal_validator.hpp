@@ -1,5 +1,6 @@
 #pragma once
 
+#include "stratadb/utils/hardware.hpp"
 #include "stratadb/utils/hash.hpp"
 #include "stratadb/utils/simd.hpp"
 
@@ -70,15 +71,14 @@ inline constexpr size_t DELTA_DATA_BYTES = DELTA_CRC_OFFSET;
     std::memcpy(header_copy, block_data, sizeof(header_copy));
     std::memset(header_copy + sizeof(uint64_t), 0, sizeof(XXH128_hash_t));
 
+    alignas(utils::CACHE_LINE_SIZE) XXH3_state_t state;
 
-    XXH3_state_t* state = XXH3_createState();
-    XXH3_128bits_reset(state);
-    XXH3_128bits_update(state, header_copy, sizeof(header_copy));
+    XXH3_128bits_reset(&state);
+    XXH3_128bits_update(&state, header_copy, sizeof(header_copy));
     if (valid_end > sizeof(header_copy)) {
-        XXH3_128bits_update(state, block_data + sizeof(header_copy), valid_end - sizeof(header_copy));
+        XXH3_128bits_update(&state, block_data + sizeof(header_copy), valid_end - sizeof(header_copy));
     }
-    const XXH128_hash_t computed = XXH3_128bits_digest(state);
-    XXH3_freeState(state);
+    const XXH128_hash_t computed = XXH3_128bits_digest(&state);
 
     const bool ok = (computed.low64 == stored_hash.low64) && (computed.high64 == stored_hash.high64);
 
@@ -90,7 +90,7 @@ inline constexpr size_t DELTA_DATA_BYTES = DELTA_CRC_OFFSET;
 }
 
 [[nodiscard]] inline auto validate_delta_block(const uint8_t* block_data,
-    //NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+                                               // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
                                                size_t block_size,
                                                size_t written_end) noexcept -> BlockValidationResult {
 
