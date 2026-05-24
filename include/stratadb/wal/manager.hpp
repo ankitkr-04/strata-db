@@ -6,6 +6,7 @@
 #include "stratadb/io/unique_file_descriptor.hpp"
 #include "stratadb/memory/block_pool.hpp"
 #include "stratadb/platform/hardware_model.hpp"
+#include "stratadb/platform/identity.hpp"
 #include "stratadb/utils/cache.hpp"
 #include "stratadb/wal/pipeline_variant.hpp"
 
@@ -32,7 +33,8 @@ class WalManager {
                const config::BlockPoolConfig& pool_cfg,
                const config::ConfigManager& config_mgr,
                io::UniqueFd fd,
-               const platform::HardwareInfo& hw_info);
+               const platform::HardwareInfo& hw_info,
+               const platform::DbIdentity& db_identity);
 
     ~WalManager();
 
@@ -50,6 +52,10 @@ class WalManager {
         return hw_info_;
     }
 
+    [[nodiscard]] auto db_identity() const noexcept -> const platform::DbIdentity& {
+        return db_identity_;
+    }
+
   private:
     config::WalConfig wal_config_;
     const config::ConfigManager& config_mgr_;
@@ -63,6 +69,7 @@ class WalManager {
     alignas(utils::CACHE_LINE_SIZE) std::atomic<std::uint64_t> lsn_generator_{1};
 
     StagingVariant pipeline_;
+    platform::DbIdentity db_identity_;
 
     alignas(utils::CACHE_LINE_SIZE) std::atomic<std::uint64_t> durable_lsn_{0};
     alignas(utils::CACHE_LINE_SIZE) std::atomic<std::uint64_t> current_file_offset_{0};

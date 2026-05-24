@@ -40,7 +40,8 @@ WalManager::WalManager(const config::WalConfig& wal_cfg,
                        const config::BlockPoolConfig& pool_cfg,
                        const config::ConfigManager& config_mgr,
                        io::UniqueFd fd,
-                       const platform::HardwareInfo& hw_info)
+                       const platform::HardwareInfo& hw_info,
+                       const platform::DbIdentity& db_identity)
     : wal_config_(wal_cfg)
     , config_mgr_(config_mgr)
     , fd_(std::move(fd))
@@ -49,7 +50,7 @@ WalManager::WalManager(const config::WalConfig& wal_cfg,
     , pool_(pool_cfg)
     , lsn_generator_{1}
     , pipeline_(make_pipeline(hw_info_.io, wal_config_, pool_, lsn_generator_)) // 3. Build the pipeline
-{}
+    , db_identity_(db_identity) {}
 
 WalManager::~WalManager() {
     stop_requested_.store(true, std::memory_order_release);
