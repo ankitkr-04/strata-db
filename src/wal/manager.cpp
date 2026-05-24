@@ -9,8 +9,6 @@
 
 namespace stratadb::wal {
 
-// make_pipeline
-//
 // Pure factory: maps (hardware capabilities, resolved WAL config) to the
 // correct StagingVariant alternative.  Called exactly once from the
 // constructor initializer list after caps_ and pool_ are live.
@@ -40,7 +38,6 @@ auto WalManager::make_pipeline(const io::IOCapabilities& caps,
                     : StagingVariant{std::in_place_type<Ssd4kMpscPipeline>, pool, lsn_gen};
 }
 
-
 // Initializer list order MUST match the declaration order in manager.hpp:
 //   wal_config_ → config_mgr_ → fd_ → caps_ → engine_ → pool_
 //   → lsn_generator_ → pipeline_ → ...
@@ -60,7 +57,6 @@ WalManager::WalManager(const config::WalConfig& wal_cfg,
     , lsn_generator_{1}
     , pipeline_(make_pipeline(caps_, wal_config_, pool_, lsn_generator_)) {}
 
-
 // Order of events:
 //   1. Signal the flusher to stop.
 //   2. Seal any remaining staged blocks and wake the flusher.
@@ -79,8 +75,6 @@ void WalManager::start_flusher() {
     flusher_thread_ = std::jthread([this] { flusher_loop(); });
 }
 
-// write_batch
-//
 // std::visit resolves the variant once per batch (not per record).
 // Inside the visitor the compiler sees the concrete WalPipeline type and
 // inlines stage_write() — no virtual dispatch on the per-record path.
@@ -119,26 +113,23 @@ void WalManager::flush() noexcept {
 //   7. Sleeps (futex or cpu_relax) when idle; exits when stop_requested_
 //      is true AND the queue is fully drained.
 void WalManager::flusher_loop() {
-    // ── 1. Thread physics ─────────────────────────────────────────────────────
     if (wal_config_.spsc.mode == config::SpscMode::ManualOverride) {
         if (!utils::os::pin_current_thread_to_core(wal_config_.spsc.core_id.value())) {
             // Log: core pinning failed; continuing without pinning.
         }
-    }
-    if (wal_config_.request_realtime_priority) {
-        if (!utils::os::elevate_to_realtime_priority()) {
-            // Log: RT elevation failed; continuing at normal priority.
+        if (wal_config_.spsc.request_realtime_priority) {
+            if (!utils::os::elevate_to_realtime_priority()) {
+                // Log: RT elevation failed; continuing at normal priority.
+            }
         }
     }
 
-    // ── 2. Hot loop ───────────────────────────────────────────────────────────
     while (true) {
         bool performed_work = false;
         uint64_t highest_lsn_in_batch = 0;
 
         std::visit(
             [&](auto& active_pipeline) {
-                // ── Drain the queue (group-commit batching) ───────────────────
                 while (true) {
                     auto [payload_base, free_base] = active_pipeline.pop_ready_block();
                     if (!payload_base) {
@@ -154,7 +145,6 @@ void WalManager::flusher_loop() {
                         highest_lsn_in_batch = node->max_lsn;
                     }
 
-                    // ── pwritev ───────────────────────────────────────────────
                     // Sentinels carry an empty span; skip the write but still
                     // recycle their memory if needed.
                     if (!node->memory_to_write.empty()) {
@@ -175,7 +165,6 @@ void WalManager::flusher_loop() {
                         }
                     }
 
-                    // ── Pool recycle ──────────────────────────────────────────
                     // node_to_free may differ from payload_node in Vyukov MPSC
                     // (it's the old dummy head, not the current payload).
                     if (node_to_free && node_to_free->pool_managed) {
@@ -184,7 +173,6 @@ void WalManager::flusher_loop() {
                     }
                 }
 
-                // ── fdatasync + ACID acknowledgment ───────────────────────────
                 if (performed_work) {
                     // Read sync_on_commit from the live mutable config.
                     // ReadGuard pins the epoch for the duration of this expression;
@@ -212,7 +200,6 @@ void WalManager::flusher_loop() {
                     }
                 }
 
-                // ── Power management ──────────────────────────────────────────
                 if (!performed_work && !stop_requested_.load(std::memory_order_acquire)) {
                     active_pipeline.wait_for_work(stop_requested_);
                 }

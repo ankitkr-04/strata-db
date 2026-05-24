@@ -20,6 +20,9 @@ struct SpscConfig {
     // Meaningful only when mode == ManualOverride.
     // Validated against is_core_isolated() at WalManager construction.
     std::optional<std::uint32_t> core_id{std::nullopt};
+
+    // Attempt to elevate the Flusher thread to SCHED_FIFO (requires CAP_SYS_NICE).
+    bool request_realtime_priority{true};
 };
 
 struct WalConfig {
@@ -28,9 +31,6 @@ struct WalConfig {
     IOConfig io_config{};
 
     SpscConfig spsc{};
-
-    // Attempt to elevate the Flusher thread to SCHED_FIFO (requires CAP_SYS_NICE).
-    bool request_realtime_priority{true};
 
     // Pre-allocated, fdatasync'd files kept in the Ready pool.
     // Invariant: ready_file_count <= (ring_buffer_capacity - 2).
