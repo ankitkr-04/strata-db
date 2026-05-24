@@ -1,6 +1,7 @@
 #pragma once
 
 #include "stratadb/config/immutable/io_config.hpp"
+#include "stratadb/utils/bytes.hpp"
 
 #include <cstdint>
 #include <optional>
@@ -36,6 +37,14 @@ struct WalConfig {
     // Total Ring Capacity = 1 (Active) + 1 (Creating) + preallocated_pool_size
     // E.g., A pool size of 2 requires a ring buffer capacity of at least 4.
     std::uint8_t preallocated_pool_size{2};
+
+    // At 38.4 Gbps(4.8 GB / s), a 64 MiB slot fills in ~13 ms.
+    //   With preallocated_pool_size = 2, the BG thread has 26 ms to create
+    //   the next slot (posix_fallocate + fdatasync ≈ 2–5 ms on NVMe).
+    //   Increasing slot_size_bytes or pool_size provides more headroom.
+    //
+    // Default: 64 MiB
+    std::uint64_t slot_size_bytes{64UZ * stratadb::utils::bytes::MiB};
 };
 
 } // namespace stratadb::config
