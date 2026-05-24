@@ -46,12 +46,13 @@ inline auto map_read_errno() noexcept -> IOError {
 }
 
 } // namespace
+
 auto PosixIoEngine::writev(FileHandle fd, std::span<const struct iovec> iovs, uint64_t offset) const noexcept
     -> std::expected<size_t, IOError> {
 
-    assert(offset % caps_.logical_sector_size == 0);
+    assert(offset % io_info_.logical_sector_size == 0);
     assert(!iovs.empty());
-    assert_aligned(iovs[0].iov_base, caps_.logical_sector_size);
+    assert_aligned(iovs[0].iov_base, io_info_.logical_sector_size);
     assert(iovs.size() <= static_cast<size_t>(IOV_MAX));
 
 #ifndef NDEBUG
@@ -77,7 +78,7 @@ auto PosixIoEngine::writev(FileHandle fd, std::span<const struct iovec> iovs, ui
     ssize_t bytes_written = -1;
 
 #if defined(__linux__) && defined(RWF_ATOMIC)
-    if (caps_.supports_rwf_atomic) {
+    if (io_info_.supports_rwf_atomic) {
         bytes_written = ::pwritev2(fd, iovs.data(), iovcnt, posix_offset, RWF_ATOMIC);
     } else {
         bytes_written = ::pwritev(fd, iovs.data(), iovcnt, posix_offset);
@@ -110,8 +111,8 @@ auto PosixIoEngine::sync(FileHandle fd) const noexcept -> std::expected<void, IO
 auto PosixIoEngine::read(FileHandle fd, std::span<std::byte> buffer, uint64_t offset) const noexcept
     -> std::expected<size_t, IOError> {
 
-    assert(offset % caps_.logical_sector_size == 0);
-    assert_aligned(buffer.data(), caps_.logical_sector_size);
+    assert(offset % io_info_.logical_sector_size == 0);
+    assert_aligned(buffer.data(), io_info_.logical_sector_size);
 
     const off_t posix_offset = static_cast<off_t>(offset);
 

@@ -1,7 +1,7 @@
 #pragma once
 
-#include "io_capabilities.hpp"
 #include "io_types.hpp"
+#include "stratadb/platform/hardware_info.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -17,15 +17,10 @@ concept IoEngineConcept = requires(T engine,
                                    uint64_t offset,
                                    std::span<const struct iovec> iovs,
                                    std::span<std::byte> buffer) {
-    // --- CONTROL PLANE ---
-    // Exposes the hardware limits. The WalManager reads this ONCE at startup.
-    { engine.capabilities() } -> std::same_as<const IOCapabilities&>;
-
-    // --- DATA PLANE (The Hot Path) ---
+    { engine.capabilities() } -> std::same_as<const platform::HardwareInfo::Io&>;
     { engine.writev(fd, iovs, offset) } -> std::same_as<std::expected<size_t, IOError>>;
-
     { engine.read(fd, buffer, offset) } -> std::same_as<std::expected<size_t, IOError>>;
-
     { engine.sync(fd) } -> std::same_as<std::expected<void, IOError>>;
 };
+
 } // namespace stratadb::io
