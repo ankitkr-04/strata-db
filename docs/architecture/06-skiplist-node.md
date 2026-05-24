@@ -4,9 +4,10 @@ Author: Ankit Kumar
 Date: 2026-04-23
 
 ## Last Updated
-2026-04-27
+2026-05-24
 
 ## Change Summary
+- 2026-05-24: Synced metadata and references to the current skiplist node headers and consumers.
 - 2026-04-23: Created architecture documentation for SkipListNode binary layout, alignment constraints, trailer encoding, overflow-safe sizing, and node lifecycle semantics.
 - 2026-04-23: Added related-document navigation and expanded node lifecycle linkage to memtable integration points.
 - 2026-04-27: Updated update metadata and phase navigation links to include WAL staging documentation.

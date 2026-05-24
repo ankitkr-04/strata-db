@@ -4,9 +4,10 @@ Author: Ankit Kumar
 Date: 2026-04-23
 
 ## Last Updated
-2026-04-27
+2026-05-24
 
 ## Change Summary
+- 2026-05-24: Synced metadata and references to the current memtable source tree.
 - 2026-04-23: Created architecture documentation for MemTable abstraction and SkipListMemTable implementation, including lock-free insertion flow, sequence/version ordering, memory thresholds, and validation coverage.
 - 2026-04-23: Added related-document navigation and tightened contract-level notes for `IsMemTable` interoperability.
 - 2026-04-27: Synced phase-context references with current repository state and added WAL staging relationship in related documents.

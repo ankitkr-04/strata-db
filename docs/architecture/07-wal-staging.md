@@ -4,9 +4,10 @@ Author: Ankit Kumar
 Date: 2026-04-27
 
 ## Last Updated
-2026-05-18
+2026-05-24
 
 ## Change Summary
+- 2026-05-24: Synced the staging document with the current `manager.hpp` / `pipeline_variant.hpp` layout and the six-pipeline selection matrix.
 - 2026-04-27: Original WAL staging draft (basic staging & handoff).  
 - 2026-05-17: Rewrote to clarify the critical distinction "Block Sealing ≠ Block Flushing", document `GammaBlock` (SSD-oriented) vs `DeltaBlock` (HDD-oriented) layouts, and justify `XXH3` vs `CRC32C` selection. Aligned claims to source code where possible.
 - 2026-05-18: Overhauled block physics for `O_DIRECT` compatibility and eliminated per-record if/else overhead. Added:
@@ -20,17 +21,17 @@ Explain the in-memory WAL staging semantics that matter for correctness and dura
 ## Overview
 The staging subsystem assembles WAL blocks in thread-local memory and hands completed (sealed) blocks to a flush pipeline. Two distinct hardware realities drive different block layouts and handoff semantics:
 
-- SSDs (atomic overlapping overwrites on small LBAs) are modeled by `GammaBlock` and permit whole-block metadata (a single 128-bit `XXH3` hash) written with an overwrite of sector 0. See [include/stratadb/wal/gamma_block.hpp](include/stratadb/wal/gamma_block.hpp).
-- HDDs (rotational, 4Kn physical sectors, mechanical seek cost) are modeled by `DeltaBlock` and use per-sector `CRC32C` checksums to seal each sector before advancing. See [include/stratadb/wal/delta_block.hpp](include/stratadb/wal/delta_block.hpp).
+- SSDs (atomic overlapping overwrites on small LBAs) are modeled by `GammaBlock` and permit whole-block metadata (a single 128-bit `XXH3` hash) written with an overwrite of sector 0. See [include/stratadb/wal/block/gamma_block.hpp](include/stratadb/wal/block/gamma_block.hpp).
+- HDDs (rotational, 4Kn physical sectors, mechanical seek cost) are modeled by `DeltaBlock` and use per-sector `CRC32C` checksums to seal each sector before advancing. See [include/stratadb/wal/block/delta_block.hpp](include/stratadb/wal/block/delta_block.hpp).
 
 Key takeaway: sealing a block makes it ready for the I/O engine (no further in-memory mutation), but flushing is the act of handing that sealed, sector-aligned span to the `PosixIoEngine` (or other engine) and ensuring the OS/hardware makes it durable. The staging code performs sealing; the IO engine performs flushing.
 
 ## System Model
 | Component | Responsibility | Code reference |
 | --- | --- | --- |
-| `GammaBlock<BlockSize>` | SSD-oriented block layout: whole-block final hash computed with `XXH3_128bits`, seals by rewriting from offset `0` to the final end to persist header mutation. | [include/stratadb/wal/gamma_block.hpp](include/stratadb/wal/gamma_block.hpp)
-| `DeltaBlock<BlockSize>` | HDD-oriented block layout: per-sector CRC32C checksums are written into reserved CRC slots (last 4 bytes of each 4KiB sector); sealing a sector advances the append cursor to the next sector boundary. | [include/stratadb/wal/delta_block.hpp](include/stratadb/wal/delta_block.hpp)
-| `WalManager` | Variant dispatch selecting pipelines: `Ssd4kPipeline`, `Ssd16kPipeline`, `Hdd4kPipeline` inferred from device probing. | [include/stratadb/wal/wal_manager.hpp](include/stratadb/wal/wal_manager.hpp)
+| `GammaBlock<BlockSize>` | SSD-oriented block layout: whole-block final hash computed with `XXH3_128bits`, seals by rewriting from offset `0` to the final end to persist header mutation. | [include/stratadb/wal/block/gamma_block.hpp](include/stratadb/wal/block/gamma_block.hpp)
+| `DeltaBlock<BlockSize>` | HDD-oriented block layout: per-sector CRC32C checksums are written into reserved CRC slots (last 4 bytes of each 4KiB sector); sealing a sector advances the append cursor to the next sector boundary. | [include/stratadb/wal/block/delta_block.hpp](include/stratadb/wal/block/delta_block.hpp)
+| `WalManager` | Probes `IOCapabilities`, resolves `WalConfig`, and selects one of six `StagingVariant` alternatives: `Ssd4kMpscPipeline`, `Ssd4kSpscPipeline`, `Ssd16kMpscPipeline`, `Ssd16kSpscPipeline`, `Hdd4kMpscPipeline`, or `Hdd4kSpscPipeline`. | [include/stratadb/wal/manager.hpp](include/stratadb/wal/manager.hpp), [include/stratadb/wal/pipeline_variant.hpp](include/stratadb/wal/pipeline_variant.hpp)
 
 ## Architecture / Design
 ### Why Block Sealing ≠ Block Flushing
@@ -49,11 +50,21 @@ What: The staging subsystem implements a 2D compile-time matrix of implementatio
 
 Why: Encoding these orthogonal choices as template parameters produces a family of fully inlined, zero-virtual functions for the hot path (`stage_write`) while still allowing the runtime to pick the single correct pipeline instance once per batch.
 
-How it works: `WalManager` constructs exactly one concrete pipeline type (one cell of the 2D matrix) based on device probing and configuration. At runtime `WalManager` stores that concrete pipeline inside a `std::variant` (`StagingVariant` in `wal_manager.hpp`) and uses `std::visit` to resolve the variant once per batch in `write_batch()`. Inside the `std::visit` callback the compiler sees a concrete `WalPipeline<Layout, Queue>` type and can inline `stage_write` across the loop of records, eliminating virtual calls and branching inside the hot record-append path.
+How it works: `WalManager` constructs exactly one concrete pipeline type (one cell of the 2D matrix) based on the probed device capabilities and the resolved `WalConfig`. At runtime `WalManager` stores that concrete pipeline inside a `std::variant` (`StagingVariant` in `pipeline_variant.hpp`) and uses `std::visit` to resolve the variant once per batch in `write_batch()`. Inside the `std::visit` callback the compiler sees a concrete `WalPipeline<Layout, Queue>` type and can inline `stage_write` across the loop of records, eliminating virtual calls and branching inside the hot record-append path.
+
+Example (conceptual) `std::visit` usage inside `WalManager::write_batch`:
+
+```cpp
+std::visit([&batch](auto &pipeline) {
+  for (auto &rec : batch.records) {
+    pipeline.stage_write(rec);
+  }
+}, pipeline_variant_);
+```
 
 Trade-offs: `std::variant` resolution costs a single type-dispatch per batch (or per `write_batch()` invocation) instead of per-record overhead. This shifts the dispatch cost to batch boundaries and keeps the inner loop extremely cheap. The downside is increased binary code size due to template instantiations for each matrix cell.
 
-See: [include/stratadb/wal/wal_pipeline.hpp](include/stratadb/wal/wal_pipeline.hpp) and [include/stratadb/wal/wal_manager.hpp](include/stratadb/wal/wal_manager.hpp).
+See: [include/stratadb/wal/pipeline.hpp](include/stratadb/wal/pipeline.hpp) and [include/stratadb/wal/manager.hpp](include/stratadb/wal/manager.hpp).
 
 ### Partial Flushes and `FlushResult`
 
@@ -128,15 +139,15 @@ Trade-off summary: `XXH3` gives a stronger (longer) catch-all end-to-end fingerp
 ## Failure Modes
 | Scenario | Cause | Impact | Mitigation |
 | --- | --- | --- | --- |
-| Header update requires rewrite on device not supporting safe overlapping overwrites | Using `GammaBlock.finalize()` on an HDD-like device | Corrupted checksum invariants or inconsistent header on disk | Ensure `WalManager` selects `DeltaBlock` when `is_rotational==true` (see `wal_manager.hpp`) or add detection checks in IO engine before handing the span to storage |
+| Header update requires rewrite on device not supporting safe overlapping overwrites | Using `GammaBlock.finalize()` on an HDD-like device | Corrupted checksum invariants or inconsistent header on disk | Ensure `WalManager` selects `DeltaBlock` when `is_rotational==true` (see `manager.hpp`) or add detection checks in IO engine before handing the span to storage |
 | Checksum computation cost | High append rates leading to frequent per-sector CRCs | CPU pressure in writer thread | Move sealing work to background thread (compute+write) or use hardware-accelerated CRC routines where available |
 | Incorrect device probing | Wrong `hw_sector_size`/`is_rotational` detection | Wrong pipeline chosen (`GammaBlock` vs `DeltaBlock`) | Ensure robust device probing and conservative defaults (prefer `DeltaBlock` when unsure)
 
 ## Observability
 - Code locations to inspect:  
-  - [include/stratadb/wal/gamma_block.hpp](include/stratadb/wal/gamma_block.hpp#L1-L240)  
-  - [include/stratadb/wal/delta_block.hpp](include/stratadb/wal/delta_block.hpp#L1-L240)  
-  - [include/stratadb/wal/wal_manager.hpp](include/stratadb/wal/wal_manager.hpp#L1-L200)  
+  - [include/stratadb/wal/block/gamma_block.hpp](include/stratadb/wal/block/gamma_block.hpp#L1-L240)  
+  - [include/stratadb/wal/block/delta_block.hpp](include/stratadb/wal/block/delta_block.hpp#L1-L240)  
+  - [include/stratadb/wal/manager.hpp](include/stratadb/wal/manager.hpp#L1-L200)  
 - Runtime signals to add or monitor: stage_write latency, per-block finalize duration (hash/crc compute), ready-queue length, IO engine writev/sync latency.
 
 ## Validation / Test Matrix
@@ -146,8 +157,38 @@ Trade-off summary: `XXH3` gives a stronger (longer) catch-all end-to-end fingerp
 | DeltaBlock sector sealing correctness | Append payload so that partial sector sealing is triggered, inspect written CRC slots for correct `crc32c` values | Unit test checking `utils::crc32c` and the contents of sector CRC fields after `partial_flush()` |
 
 ## Usage / Interaction
-- Choice of pipeline: `WalManager` auto-selects `Ssd4kPipeline`, `Ssd16kPipeline`, or `Hdd4kPipeline` based on `is_rotational` and `hw_sector_size` (`wal_manager.hpp`).  
+- Choice of pipeline: `WalManager` auto-selects one of `Ssd4kMpscPipeline`, `Ssd4kSpscPipeline`, `Ssd16kMpscPipeline`, `Ssd16kSpscPipeline`, `Hdd4kMpscPipeline`, or `Hdd4kSpscPipeline` based on `is_rotational`, `physical_sector_size`, and the resolved SPSC mode (`manager.hpp` / `pipeline_variant.hpp`).  
 - Staging only seals blocks — ensure the flush pipeline (IO engine + durable sync) is implemented and verified before assuming durability.
+
+### Pipeline selection pseudocode
+
+At construction time `WalManager` resolves hardware capabilities and the resolved `WalConfig` to pick one concrete pipeline cell. The decision tree is intentionally simple and conservative:
+
+```cpp
+StagingVariant make_pipeline(const IOCapabilities& hw, const WalConfig& cfg) {
+  // Prefer explicit manual SPSC override when requested
+  if (cfg.spsc_mode == SpscMode::ManualOverride) {
+    if (hw.is_rotational) {
+      return (hw.physical_sector_size == 16384) ? StagingVariant::Hdd16kSpscPipeline
+                                                : StagingVariant::Hdd4kSpscPipeline;
+    } else {
+      return (hw.physical_sector_size == 16384) ? StagingVariant::Ssd16kSpscPipeline
+                                                : StagingVariant::Ssd4kSpscPipeline;
+    }
+  }
+
+  // Default: MPSC fallback for general multi-writer deployments
+  if (hw.is_rotational) {
+    return StagingVariant::Hdd4kMpscPipeline;
+  }
+  return (hw.physical_sector_size == 16384) ? StagingVariant::Ssd16kMpscPipeline
+                                            : StagingVariant::Ssd4kMpscPipeline;
+}
+```
+
+Notes:
+- The decision inputs are: `IOCapabilities::is_rotational`, `IOCapabilities::physical_sector_size`, and the resolved `WalConfig::spsc_mode`.
+- `WalManager` constructs one concrete `WalPipeline<Layout, Queue>` and stores it in `StagingVariant`; `write_batch()` then uses `std::visit` once per batch to dispatch into the concrete type.
 
 ## Notes
 - Not verified: end-to-end durability until flush pipeline integration and sync semantics are exercised by system tests.  

@@ -4,9 +4,10 @@ Author: Ankit Kumar
 Date: 2026-04-17
 
 ## Last Updated
-2026-04-27
+2026-05-24
 
 ## Change Summary
+- 2026-05-24: Synced the build document with the refactored source tree and current WAL source path.
 - 2026-04-17: Initial architecture document for the build and test toolchain.
 - 2026-04-19: Expanded to systems-level format with explicit model, component rationale, tables, failure analysis, and observability guidance.
 - 2026-04-20: Updated for NUMA linkage and current CMake behavior, including arena/tlab targets, sanitizer conflict checks, and test warning policy separation.
@@ -40,7 +41,7 @@ This model exists to prevent drift between local builds, CI-style checks, and pr
 | Profiling toggle | `STRATADB_ENABLE_PROFILING` | Retains frame pointers for perf/flamegraph workflows |
 | Linker selection | `STRATADB_USE_MOLD` + `find_program(mold)` with fallback | Keeps fast-linker optimization optional instead of hard-required |
 | NUMA dependency | `stratadb` links `numa` | Enables NUMA-aware memory components in core library build |
-| Core sources | memory/config/memtable + `src/wal/wal_staging.cpp` + `src/memory/block_pool.cpp` + hardware utils | Ensures WAL staging and block-pool internals are built with the same policy as other core subsystems |
+| Core sources | memory/config/memtable + `src/wal/manager.cpp` + `src/memory/block_pool.cpp` + hardware utils | Ensures WAL staging and block-pool internals are built with the same policy as other core subsystems |
 | Testing | `stratadb_tests` + `gtest_discover_tests(...)` | Exposes fine-grained tests through CTest without manual registration |
 | Benchmarks | `STRATADB_BUILD_BENCHMARKS` gated by Release + no sanitizers | Avoids skewed benchmark results from debug/sanitizer instrumentation |
 

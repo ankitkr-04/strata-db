@@ -4,9 +4,10 @@ Author: Ankit Kumar
 Date: 2026-04-17
 
 ## Last Updated
-2026-04-27
+2026-05-24
 
 ## Change Summary
+- 2026-05-24: Synced metadata and terminology to the current configuration-management implementation.
 - 2026-04-17: Initial architecture document for immutable/mutable config split.
 - 2026-04-19: Expanded with system model, data-flow diagrams, and failure analysis.
 - 2026-04-20: Refocused component breakdown around runtime behavior.

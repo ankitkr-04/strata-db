@@ -4,41 +4,59 @@ Author: Ankit Kumar
 Date: 2026-05-18
 
 ## Last Updated
-2026-05-18
+2026-05-24
 
 ## Change Summary
-- 2026-05-18: Created the WAL concurrency reference covering MPSC vs SPSC, the graceful-degradation boot tree, Vyukov intrusive MPSC rationale, and the SPSC mailbox/zero-latency path. Notes the current codebase state where SPSC is not implemented and `vyukov_mpsc_queue.hpp` is a stub.
+- 2026-05-24: Rewritten to match the current concrete `VyukovMpscQueue` and `SpscMailboxQueue` implementations, the six-cell staging matrix, and the resolved-config selection path in `WalManager`.
+- 2026-05-18: Created the WAL concurrency reference covering MPSC vs SPSC, the graceful-degradation boot tree, Vyukov intrusive MPSC rationale, and the SPSC mailbox/zero-latency path.
 
 ## Purpose
-Explain the OS- and CPU-level thread physics governing WAL handoff, justify the chosen concurrency primitives, and document the graceful-degradation boot sequence used to pick SPSC vs MPSC at runtime.
+Explain the OS- and CPU-level thread physics governing WAL handoff, justify the queue choices, and document how `WalManager` selects one pipeline cell from the compile-time matrix at construction time.
 
 ## Overview
-This document explains the trade-offs between SPSC and MPSC paths, how cache-coherence (MESI) affects shared-state contention, why we parse `/sys/devices/system/cpu/isolated`, and how the Vyukov intrusive MPSC algorithm fits as the conservative fallback.
+The current WAL path is a two-axis matrix: `WalPipeline<Layout, Queue>` combines a physical block layout (`GammaBlock` or `DeltaBlock`) with a queue implementation (`VyukovMpscQueue` or `SpscMailboxQueue`). `WalManager` probes device capabilities, reads the resolved `WalConfig`, stores one concrete pipeline in `StagingVariant`, and uses `std::visit` once per batch so the hot record loop still sees fully concrete types.
+
+The concurrency question is therefore not "virtual dispatch or not" but "which queue physics do we want for this deployment": many-writer MPSC with a sleeping consumer, or per-writer SPSC mailboxes with a busy-polling flusher.
 
 ## System Model
 | Concept | What | Code reference |
 | --- | --- | --- |
-| Pipeline type matrix | `WalPipeline<Layout, Queue>` — templates over block layout and queue implementation; chosen once at runtime via `std::variant` | [include/stratadb/wal/wal_pipeline.hpp](include/stratadb/wal/wal_pipeline.hpp#L1-L120), [include/stratadb/wal/wal_manager.hpp](include/stratadb/wal/wal_manager.hpp#L1-L200)
-| MPSC queue stub | Placeholder `VyukovMpscQueue` exists as a compilation stub in the codebase | [include/stratadb/wal/wal_manager.hpp](include/stratadb/wal/wal_manager.hpp#L1-L100)
-| SPSC mailbox stub | Placeholder `SpscMailboxQueue` exists as a compilation stub in the codebase | [include/stratadb/wal/wal_manager.hpp](include/stratadb/wal/wal_manager.hpp#L1-L100)
-| OS probing for isolation | `utils::os::auto_discover_isolated_core()` inspects `/sys/devices/system/cpu/isolated` semantics | [include/stratadb/utils/os.hpp](include/stratadb/utils/os.hpp#L1-L120)
+| Pipeline type matrix | `WalPipeline<Layout, Queue>` combines block layout and queue implementation; `StagingVariant` stores one selected alternative | [include/stratadb/wal/pipeline.hpp](include/stratadb/wal/pipeline.hpp), [include/stratadb/wal/pipeline_variant.hpp](include/stratadb/wal/pipeline_variant.hpp), [include/stratadb/wal/manager.hpp](include/stratadb/wal/manager.hpp)
+| MPSC queue implementation | `VyukovMpscQueue` intrusive lock-free MPSC queue with a sleeping consumer | [include/stratadb/wal/queue/vyukov_mpsc_queue.hpp](include/stratadb/wal/queue/vyukov_mpsc_queue.hpp)
+| SPSC mailbox implementation | `SpscMailboxQueue` per-thread ring-buffer mailbox array with busy-poll flusher behavior | [include/stratadb/wal/queue/spsc_mailbox_queue.hpp](include/stratadb/wal/queue/spsc_mailbox_queue.hpp)
+| Device probe | `IOCapabilities` supplies rotational flag, physical sector size, and atomic-write support | [include/stratadb/io/io_concept.hpp](include/stratadb/io/io_concept.hpp), [src/utils/hardware.cpp](src/utils/hardware.cpp)
 
-## Data Flow (concurrency-focused)
+## Data Flow
+```mermaid
+flowchart TD
+  W[Writer threads] --> B[WalManager::write_batch]
+  B --> V[std::visit on StagingVariant]
+  V --> P[Concrete WalPipeline<Layout, Queue>]
+  P --> Q[Queue implementation]
+  Q --> F[Dedicated flusher loop]
+  F --> E[PosixIoEngine writev/sync]
+  E --> S[Storage]
+```
+
+### Thread Interaction
 ```mermaid
 sequenceDiagram
-    participant W as Writer threads
-    participant P as Producer pipeline (thread-local)
-    participant Q as Handoff queue (MPSC/SPSC)
-    participant F as Flusher thread
+  participant W as Writer Thread
+  participant M as WalManager
+  participant Q as Queue
+  participant F as Flusher Thread
 
-    W->>P: append record (hot path)
-    P-->>Q: enqueue sealed block (handoff)
-    Q->>F: dequeue and write
+  W->>M: write_batch(batch)
+  M->>M: std::visit(selected pipeline)
+  M->>Q: stage_write / push sealed block
+  F->>Q: pop()
+  Q-->>F: payload_node + node_to_free
+  F->>F: writev + optional sync
 ```
 
 ## 1. The MPSC vs SPSC Dilemma
 
-What: SPSC (single-producer single-consumer) can provide extremely low-latency handoffs when one writer thread is paired with a dedicated flusher thread. MPSC (multiple-producer single-consumer) permits many writer threads to hand off to a single flusher without strict pinning requirements.
+What: SPSC (single-producer single-consumer) gives each writer its own mailbox, so the push path is uncontended and the flusher can sweep mailboxes in a fixed round-robin loop. MPSC permits many writers to share one handoff queue, which is simpler when the deployment has multiple writers and no strict core isolation.
 
 Why it matters: At the CPU level, naive contention on shared variables (a single mutex protecting a handoff queue, or a single cache line frequently written by many cores) causes cache-line bouncing under MESI. When multiple cores repeatedly write the same cache line, ownership migrates between cores and memory-coherence traffic skyrockets, producing high latency and poor scalability.
 
@@ -46,76 +64,119 @@ How (cache physics):
 - If 8 threads contend on one mutex or a single-tail pointer in an MPSC structure, the cache line containing that pointer will be transferred between cores on each update (invalidations and exclusive ownership transfers under MESI). Each transfer requires an inter-core coherence message and may serialize updates.
 
 Trade-offs:
-- SPSC (when viable): Minimal coherence traffic — producer and consumer operate on disjoint cache lines for most operations, or the producer writes only to an enqueue slot the consumer later reads. This enables very low-latency handoffs.
-- MPSC (general): Easier to integrate with many writers but requires careful lock-free algorithms (e.g., Vyukov) to reduce coherence hotspots. Generally higher per-handoff cost than SPSC but scales better with multiple producers.
+- SPSC (when viable): Each writer sees zero cross-writer contention because it owns one mailbox. The flusher pays an O(MAX_SUPPORTED_THREADS) sweep cost.
+- MPSC (general): One shared queue is cheaper to enumerate and easier to sleep on, but every push touches a shared tail pointer.
 
-## 2. Graceful Degradation Tree (Boot Sequence)
+## 2. Selection Tree
 
-What: At startup we must pick an appropriate pipeline (one cell of the 2D template matrix). The system attempts the lowest-latency option (SPSC pinned to an isolated core) and degrades to more conservative options when requirements aren't met.
+What: `WalManager` does not perform autonomous discovery; it receives a resolved `WalConfig` and uses that plus `IOCapabilities` to choose one cell from the staging matrix.
 
-Why: Choosing the wrong concurrency mode can either (a) crash or starve the system when resources are insufficient, or (b) provide subpar latency if the environment doesn't support strict isolation or thread pinning. Conservative defaults avoid usability regressions.
+Why: Separating resolution from construction keeps the manager deterministic and makes the pipeline choice visible at one call site.
 
-Boot steps (high level):
-1. Probe CPU count (`utils::logical_core_count()`) — require at least 3 cores to safely consider SPSC (1 writer, 1 flusher, 1 OS work). See [include/stratadb/wal/wal_manager.hpp](include/stratadb/wal/wal_manager.hpp#L1-L200).
-2. If `requested_config_.spsc_mode == AutoDiscover`, call `utils::os::auto_discover_isolated_core()` which inspects `/sys/devices/system/cpu/isolated`. Isolated cores are those excluded from general scheduling and thus suitable for busy-polling.
-3. Explicitly avoid pinning to logical CPU 0: CPU 0 often receives interrupt handling and kernel background tasks; pinning user-level low-latency threads there defeats isolation and increases jitter.
-4. If an isolated core is discovered and validated, convert to `ManualOverride` and pin flusher thread accordingly. Otherwise mark SPSC disabled and use the MPSC pipeline.
+How it works:
+1. `WalManager` probes `IOCapabilities` in the constructor.
+2. Layout choice is driven by media physics: rotational media uses `DeltaBlock<4096>`; non-rotational media uses `GammaBlock<4096>` unless `physical_sector_size == 16384`, in which case `GammaBlock<16384>` is selected.
+3. Queue choice is driven by the resolved SPSC mode: `ManualOverride` selects `SpscMailboxQueue`; otherwise `VyukovMpscQueue` is selected.
+4. The chosen layout and queue form one `WalPipeline<Layout, Queue>` cell inside `StagingVariant`.
+5. `write_batch()` resolves the variant once per batch with `std::visit` and stages every record through the concrete pipeline.
 
-Why `/sys/devices/system/cpu/isolated`:
-- Linux allows administrators to isolate cores via kernel command-line `isolcpus` or `systemd` settings. Parsing this sysfs entry lets the process discover administrative isolation without requiring privileged introspection.
+Notes: Any higher-level auto-discovery of isolated cores must happen before `WalManager` construction. The manager itself only consumes the resolved setting.
 
-Notes: This document follows the code's current logic: see `WalManager::compute_effective_config()` in [include/stratadb/wal/wal_manager.hpp](include/stratadb/wal/wal_manager.hpp#L1-L200).
+## 3. Vyukov's Intrusive MPSC
 
-## 3. Vyukov's Intrusive MPSC (The Fallback)
-
-What: Vyukov's MPSC queue is a wait-free/enqueue-fast lock-free algorithm well-suited for many-producer single-consumer scenarios. The typical pattern uses an atomic exchange (XCHG) from producers to append nodes, and a single consumer walks the list to pop batches.
+What: `VyukovMpscQueue` is the fallback when many writers share one queue. It uses a single atomic exchange on the producer tail and a consumer-visible dummy head node so the consumer can pop whole batches without taking a mutex.
 
 Why: Compared to coarse mutexes, Vyukov avoids kernel transitions and limits coherence to a small set of cache lines. Enqueue operations use a single atomic exchange that hands newly appended entries into a shared head pointer; the consumer later traverses the list, unlinking the batch.
 
 How (implementation notes / primitives):
-- Producer-side: a single `std::atomic<Node*> head;` updated via `std::atomic_exchange` (XCHG) to push the producer's node(s) onto the shared list. This is a single atomic write that costs a coherence transfer but is still cheaper than a syscall.
-- Consumer-side: the consumer performs an ordered read of `head`, flips it to `nullptr`, and traverses the returned list.
-- Power efficiency: to avoid busy-waiting when the queue is empty, the design pairs the atomic producer/consumer algorithm with `std::atomic::wait` (C++20) or futex-based sleeps. Producers can `notify_one` after enqueue; the consumer uses `wait` to sleep, yielding CPU until the next enqueue.
+- Producer-side: `push()` clears `node->next`, exchanges `tail_` with the new node using `acq_rel`, and then links `prev->next` with a release store.
+- Consumer-side: `pop()` loads `head_`, checks whether the queue is structurally empty or whether a producer is in the brief link window, and either returns an empty result or advances `head_` to the next payload node.
+- Power efficiency: `wait_for_work()` uses `std::atomic::wait` on `consumer_sleeping_`, and `force_wakeup()` notifies the sleeping consumer when shutdown or new work requires it.
 
-Why `std::atomic::wait` (futex) pairing:
-- Spinning consumes CPU and power. The XCHG fast-path handles bursts; outside bursts, using a futex-like `wait` avoids active polling while preserving low wake latency.
+Trade-offs:
+- The producer path is compact and wait-free, but the consumer must tolerate the short period between the tail exchange and the next-pointer link.
+- Sleep/wake behavior is more power-friendly than busy polling, but wake latency depends on the scheduler and the atomic wait path.
 
-Code status: The project presently contains a `VyukovMpscQueue` stub type in [include/stratadb/wal/wal_manager.hpp](include/stratadb/wal/wal_manager.hpp#L1-L120) and an empty header `include/stratadb/wal/vyukov_mpsc_queue.hpp` intended for the concrete implementation. See the file in the workspace — the concrete algorithm is not yet implemented. Marked below as `Not implemented`.
+## 4. SPSC Mailbox Queue
 
-## 4. SPSC Mailbox (Zero-Latency Path)
+What: `SpscMailboxQueue` gives each dense thread index its own bounded ring buffer. The writer pushes into its private mailbox, and the flusher sweeps mailboxes in round-robin order.
 
-What: The ideal low-latency path uses an SPSC mailbox with a dedicated flusher thread pinned to an isolated core and a single producing thread that does minimal work to handoff sealed blocks.
+Why: The design removes producer contention entirely when the deployment can tolerate a busy-polling consumer. That makes it a better fit for pinned-core/manual-override setups than for general-purpose multi-writer workloads.
 
 How it reduces latency:
-- Pinning: `pthread_setaffinity_np` pins the flusher to an isolated CPU so it avoids preemption and scheduling jitter.
-- Busy-poll with `PAUSE`: The consumer (flusher) can run a tight loop with `_mm_pause()` or `asm volatile("pause")` to yield briefly between polls. Pausing reduces pipeline pressure and power while still allowing very fast wake-up (nanoseconds), beating kernel wakeups.
+- Producer-side: `push()` uses `utils::get_dense_thread_index()` to pick a mailbox, then spins with `utils::cpu_relax()` until the ring has room.
+- Consumer-side: `pop()` scans all `MAX_SUPPORTED_THREADS` mailboxes and returns the first node it finds. It remembers the last successful mailbox index so the scan does not always start at zero.
+- Power management: `wait_for_work()` is a thin `cpu_relax()` call. The queue does not sleep because the intended deployment keeps the consumer on a dedicated busy-polling core.
 
 Trade-offs and caveats:
-- Busy polling consumes CPU cycles; this is only acceptable on admin-designated isolated cores. The system uses `/sys/devices/system/cpu/isolated` to ensure such cores are not shared with other workloads.
-- The codebase currently only contains a `SpscMailboxQueue` stub in [include/stratadb/wal/wal_manager.hpp](include/stratadb/wal/wal_manager.hpp#L1-L120). The SPSC mailbox concrete implementation is not present and is `Not implemented` in the repo.
+- Busy polling consumes CPU cycles.
+- Consumer sweep time is O(MAX_SUPPORTED_THREADS), so very large thread counts increase the pop-side work even though push is contention-free.
+
+### Flusher loop & shutdown lifecycle
+
+This section documents the flusher thread's main loop, wake/shutdown ordering, and reclamation guarantees so readers understand how producers, the queue, and the flusher interact during normal operation and shutdown.
+
+Flusher main loop (conceptual):
+
+```cpp
+while (!stop_requested.load()) {
+  queue.wait_for_work(); // sleep or busy-poll depending on queue
+  while (auto item = queue.pop()) {
+    // write the sealed span to the IO engine
+    io_engine.writev(item.memory_spans);
+    // ensure durability as required (fdatasync/fsync) per policy
+    pool.return_block(item.block_ptr);
+  }
+}
+
+// final drain after stop requested
+force_wakeup();
+while (auto item = queue.pop()) {
+  io_engine.writev(item.memory_spans);
+  pool.return_block(item.block_ptr);
+}
+```
+
+Shutdown ordering (recommended):
+1. Set `stop_requested = true` and prevent new writers from entering long-lived batching paths.
+2. Producers finishing a `write_batch()` must still be allowed to push sealed blocks or otherwise return blocks to the pool.
+3. Call `queue.force_wakeup()` to ensure a sleeping flusher wakes immediately.
+4. Flusher drains the queue, performs pending writes and durability operations, returns blocks to the pool, and updates any durable offsets/LSNs.
+5. The manager joins the flusher thread and finalizes any higher-level state.
+
+Wake semantics and edge cases:
+- For `VyukovMpscQueue`, producers use `force_wakeup()` to notify a sleeping consumer; the consumer uses `atomic::wait`/`notify_one` patterns to sleep efficiently.
+- For `SpscMailboxQueue`, the flusher is expected to busy-poll; shutdown relies on a `stop_requested` flag and a final `force_wakeup()` to break out of the polling loop and drain mailboxes.
+- Producers that push during shutdown must be tolerant: either the push succeeds and the flusher will process the item, or the push fails with a shutdown error that the caller must surface.
+
+Memory reclamation:
+- The flusher must only reclaim a block (return to `pool`) after the IO engine has successfully accepted the write and any configured durability operation has completed. Holding on to block pointers until reclamation avoids ABA and use-after-free hazards.
+- Ensure that `pool.return_block()` is call-safe from the flusher thread context.
+
 
 ## Implementation Reality & Code Links
-- `WalPipeline<Layout, Queue>` and the variant dispatch are implemented as templates in [include/stratadb/wal/wal_pipeline.hpp](include/stratadb/wal/wal_pipeline.hpp#L1-L120) and selected via `WalManager` in [include/stratadb/wal/wal_manager.hpp](include/stratadb/wal/wal_manager.hpp#L1-L240).
-- Stubs in the current tree:
-  - `VyukovMpscQueue` — stubbed in `wal_manager.hpp` and `vyukov_mpsc_queue.hpp` is empty. Not implemented.
-  - `SpscMailboxQueue` — stubbed in `wal_manager.hpp`. Not implemented.
+`WalPipeline<Layout, Queue>` and the variant dispatch are implemented as templates in [include/stratadb/wal/pipeline.hpp](include/stratadb/wal/pipeline.hpp) and selected via `WalManager` in [include/stratadb/wal/manager.hpp](include/stratadb/wal/manager.hpp). The concrete queues live in [include/stratadb/wal/queue/vyukov_mpsc_queue.hpp](include/stratadb/wal/queue/vyukov_mpsc_queue.hpp) and [include/stratadb/wal/queue/spsc_mailbox_queue.hpp](include/stratadb/wal/queue/spsc_mailbox_queue.hpp).
 
 ## Key Design Decisions
 | Decision | Why | Alternative Rejected | Trade-off |
 | --- | --- | --- | --- |
-| Prefer SPSC when an isolated core exists | Lowest possible latency when safe | Always use MPSC for simplicity | SPSC requires strict core isolation and increases operational complexity |
-| Use Vyukov MPSC as fallback | Scales to multiple producers with low syscall overhead | Coarse mutex or lock-based queues | Higher per-handoff latency than SPSC; simpler to implement and robust across environments |
+| Choose queue type at construction time | Keeps the hot path branch-free after `std::visit` | Runtime queue switching per batch | More variants in the matrix |
+| Use Vyukov MPSC for general multi-writer handoff | Scales to multiple producers with low syscall overhead | Coarse mutex or lock-based queues | Higher per-handoff latency than SPSC |
+| Use per-thread SPSC mailboxes for manual override | Eliminates producer contention when the consumer can busy-poll | One shared queue for every writer | O(MAX_THREADS) consumer sweep |
 
 ## Failure Modes
 | Scenario | Cause | Impact | Mitigation |
 | --- | --- | --- | --- |
-| Incorrectly claimed isolated core | Admin misconfiguration or inaccurate parsing | Flusher pinned to a busy core — increased jitter and latency | Validate isolcpus semantics; conservative defaults (prefer MPSC) |
-| Absent queue implementations | `vyukov_mpsc_queue.hpp` / SPSC not implemented | System compiles with stubs but runtime may not perform as designed | Implement concrete queue types; add unit tests exercising wake/sleep semantics |
+| Producer stalls mid-link | Consumer observes the tail exchange before `prev->next` is visible | `pop()` returns empty even though work is in flight | Retry the consumer loop; this is the expected transient window |
+| SPSC mailbox fills | Writer outruns the flusher on its private ring buffer | Writer spins in `push()` and burns CPU | Increase mailbox capacity or reduce flush latency |
+| Busy-poll core is not actually isolated | Manual override uses a core that receives other work | Higher jitter and lower handoff predictability | Reserve the core at the OS level before enabling SPSC mode |
+| Flusher sleeps with stop requested | Queue is empty and shutdown is in progress | Work may appear delayed until wakeup | `force_wakeup()` and `stop_requested` coordination in `WalManager` |
 
 ## Observability
-- Expose metrics: per-handoff latency histogram, queue length, producer enqueue rate, consumer batch size.
-- Instrument OS-level affinity and whether SPSC was selected (log `effective_config_.spsc_mode` and `manual_core_id`). See `WalManager::get_effective_config()`.
+- Expose metrics: queue depth, producer retry count, consumer batch size, wakeups per second, and batch flush latency.
+- Log the selected pipeline cell at startup: layout choice, queue choice, and the resolved `spsc.mode`.
+- Trace `write_batch()`, `push()`, `pop()`, and `wait_for_work()` so stall windows and sleep transitions are visible.
 
 ## Notes
-- Not implemented: concrete `VyukovMpscQueue` and `SpscMailboxQueue` — both present as stubs. See [include/stratadb/wal/vyukov_mpsc_queue.hpp](include/stratadb/wal/vyukov_mpsc_queue.hpp) and [include/stratadb/wal/wal_manager.hpp](include/stratadb/wal/wal_manager.hpp#L1-L120).  
-- Not verified: precise latency numbers for busy-poll loops and `std::atomic::wait` integration — these require microbenchmarks on representative hardware.
+- Not verified: precise latency numbers for the queue implementations on representative hardware.
+- Not verified: whether SPSC busy-polling remains the right choice for every manual-override deployment profile.

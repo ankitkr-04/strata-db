@@ -4,9 +4,10 @@ Author: Ankit Kumar
 Date: 2026-04-20
 
 ## Last Updated
-2026-05-16
+2026-05-24
 
 ## Change Summary
+- 2026-05-24: Synced metadata and references to the current memory subsystem tree.
 - 2026-04-20: Created architecture documentation for Arena allocation, NUMA/page strategy behavior, and validation/perf workflow.
 - 2026-04-21: Reworked into full systems-level format, corrected strict-local NUMA failure semantics, added explicit thread interaction and memory lifecycle diagrams, and expanded failure and validation matrices.
 - 2026-04-23: Added related-document navigation for TLAB and memtable consumers.Synced option names and allocation guards to current code (`prefault_on_init`, power-of-two alignment checks, and overflow-safe bump path)

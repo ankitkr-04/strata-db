@@ -1,5 +1,11 @@
 # Scripts
 
+## Last Updated
+2026-05-24
+
+## Change Summary
+- 2026-05-24: Synced script documentation to the current `test.sh` and `bench.sh` behavior.
+
 Two scripts cover all developer operations. Everything else is a one-liner CMake command.
 
 ```

@@ -1,5 +1,11 @@
 # Benchmarks
 
+## Last Updated
+2026-05-24
+
+## Change Summary
+- 2026-05-24: Synced benchmark guidance with the current script-driven workflow and benchmark targets.
+
 ## Overview
 
 ### What is here

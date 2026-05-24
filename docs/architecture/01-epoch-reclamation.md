@@ -4,9 +4,10 @@ Author: Ankit Kumar
 Date: 2026-04-17
 
 ## Last Updated
-2026-04-27
+2026-05-24
 
 ## Change Summary
+- 2026-05-24: Synced wording and metadata to the current epoch-management code and doc tree.
 - 2026-04-17: Initial architecture write-up for epoch-based reclamation.
 - 2026-04-19: Expanded with explicit system model, lifecycle visualization, component-level rationale, design and failure tables, and observability workflow.
 - 2026-04-21: Updated to full systems-level structure with thread interaction and memory lifecycle diagrams.

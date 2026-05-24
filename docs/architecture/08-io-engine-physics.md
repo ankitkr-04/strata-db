@@ -4,16 +4,17 @@ Author: Ankit Kumar
 Date: 2026-05-17
 
 ## Last Updated
-2026-05-17
+2026-05-24
 
 ## Change Summary
+- 2026-05-24: Synced the I/O-engine document with the refactored WAL pipeline and current path layout.
 - 2026-05-17: New document. Explains the separation between IO mechanism (`PosixIoEngine`) and WAL policy (`WalManager`), the `IOCapabilities` probe, why `fallocate()` is necessary for HDDs, and the macOS `F_FULLFSYNC` trap for forcing physical flushes.
 
 ## Purpose
 Record the non-obvious, platform-dependent semantics that the I/O engine and the WAL manager rely on. This is a high-signal reference for implementers who must reason about durability, atomicity, and performance on different storage media.
 
 ## Overview
-The codebase separates mechanism (how to perform reads/writes/syncs) from policy (which spans to hand to the engine). `PosixIoEngine` implements the mechanism and exposes `IOCapabilities` (logical/physical sector size, rotational flag, support for FUA/RWF atomic writes, and whether `fallocate()` is supported). `WalManager` chooses block layouts based on those capabilities; it does not itself perform low-level writev/pwritev.
+The codebase separates mechanism (how to perform reads/writes/syncs) from policy (which spans to hand to the engine). `PosixIoEngine` implements the mechanism and exposes `IOCapabilities` (logical/physical sector size, rotational flag, support for FUA/RWF atomic writes, and whether `fallocate()` is supported). `WalManager` chooses both block layout and queue topology based on those capabilities and the resolved WAL config; it does not itself perform low-level writev/pwritev.
 
 Key code facts:
 - `IOCapabilities` is defined in [include/stratadb/io/io_concept.hpp](include/stratadb/io/io_concept.hpp) and includes `logical_sector_size`, `physical_sector_size`, `is_rotational`, `supports_rwf_atomic`, and `supports_fallocate`.
@@ -25,7 +26,7 @@ Key code facts:
 | Role | Responsible component | What it decides |
 | --- | --- | --- |
 | Mechanism | `PosixIoEngine` | How to perform `writev`, `read`, and `sync` given `IOCapabilities`.
-| Policy | `WalManager` / staging | Which memory span (sector-aligned sealed block) to hand to the engine and which block layout to choose.
+| Policy | `WalManager` / staging | Which sector-aligned span to hand to the engine, which block layout to choose, and which queue topology to pair with it.
 
 Mermaid (interaction):
 ```mermaid
@@ -76,7 +77,7 @@ Implication:
 - Error mapping: the engine maps `errno` to `IOError::AlignmentViolation`, `IOError::DeviceFull`, or `IOError::HardwareError` to keep the API small and machine-readable.
 
 ## Practical guidance for integrators
-- At startup probe `IOCapabilities` once per WAL file/device and choose the staging pipeline accordingly (`WalManager` already does this decision based on `is_rotational` and `hw_sector_size`).
+- At startup probe `IOCapabilities` once per WAL file/device and choose the staging pipeline accordingly (`WalManager` already does this decision based on `is_rotational`, `physical_sector_size`, and the resolved SPSC mode).
 - When targeting HDDs: preallocate via `fallocate()` if available, choose `DeltaBlock` layout, and prefer to seal sectors early to avoid long RMW.
 - When targeting SSDs: choose `GammaBlock` when `supports_rwf_atomic` or when `physical_sector_size` indicates enterprise LBAs; use whole-block `XXH3` finalization and rely on the engine to issue overlapping overwrites where necessary.
 - Always add unit tests that exercise the exact write+sync sequence used in production; small differences in ordering or syscall choice can change durability behavior across kernels and firmware.
