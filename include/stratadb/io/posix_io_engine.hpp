@@ -2,7 +2,7 @@
 
 #include "io_concept.hpp"
 #include "io_types.hpp"
-#include "stratadb/platform/hardware_info.hpp"
+#include "stratadb/platform/hardware_model.hpp"
 
 #include <cstddef>
 #include <expected>
