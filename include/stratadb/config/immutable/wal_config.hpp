@@ -33,11 +33,9 @@ struct WalConfig {
     SpscConfig spsc{};
 
     // Pre-allocated, fdatasync'd files kept in the Ready pool.
-    // Invariant: ready_file_count <= (ring_buffer_capacity - 2).
-    //   One slot is always Active; one slot is always being Created.
-    // Validated at WalManager construction against the actual ring buffer size.
-    // Defaulting to 2 absorbs virtually any realistic NVMe write burst.
-    std::uint8_t ready_file_count{2};
+    // Total Ring Capacity = 1 (Active) + 1 (Creating) + preallocated_pool_size
+    // E.g., A pool size of 2 requires a ring buffer capacity of at least 4.
+    std::uint8_t preallocated_pool_size{2};
 };
 
 } // namespace stratadb::config
