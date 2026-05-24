@@ -1,9 +1,13 @@
 #include "stratadb/platform/identity.hpp"
 
-#include <cstdio>
+#include "stratadb/utils/os.hpp"
+
 #include <cstring>
-#include <fstream>
+#include <fcntl.h>
+#include <optional>
 #include <random>
+#include <string_view>
+#include <unistd.h>
 
 namespace stratadb::platform {
 static auto generate_uuid_v4() noexcept -> DbIdentity {
@@ -21,6 +25,29 @@ static auto generate_uuid_v4() noexcept -> DbIdentity {
     id.bytes[8] = static_cast<std::uint8_t>((id.bytes[8] & 0x3FU) | 0x80U); // variant 10xx
 
     return id;
+}
+
+auto DbIdentity::to_string() const noexcept -> std::string {
+    static constexpr char kHex[] = "0123456789abcdef";
+
+    std::string s;
+    s.reserve(36);
+
+    static constexpr std::size_t kDashAfter[] = {3, 5, 7, 9}; // byte indices after which to insert '-'
+
+    for (std::size_t i = 0; i < 16; ++i) {
+        s += kHex[bytes[i] >> 4];
+        s += kHex[bytes[i] & 0x0FU];
+
+        for (auto d : kDashAfter) {
+            if (i == d) {
+                s += '-';
+                break;
+            }
+        }
+    }
+
+    return s;
 }
 
 static auto parse_uuid(std::string_view s) noexcept -> std::optional<DbIdentity> {
@@ -76,55 +103,94 @@ static auto parse_uuid(std::string_view s) noexcept -> std::optional<DbIdentity>
     return id;
 }
 
+// Writes the IDENTITY file atomically with full crash safety:
+//   1. Write content to IDENTITY.tmp
+//   2. fsync the file fd  → data reaches disk before rename
+//   3. rename .tmp → IDENTITY  (atomic on POSIX within the same filesystem)
+//   4. fsync the directory fd  → the directory entry update (rename) reaches disk
+//
+// Without step 2: power loss after rename leaves a zero-byte or partial file.
+// Without step 4: power loss after rename may leave the old directory entry on reboot.
 static auto write_identity_atomic(const std::filesystem::path& identity_path, const DbIdentity& id) noexcept -> bool {
     const auto tmp_path = std::filesystem::path{identity_path}.replace_extension(".tmp");
 
-    {
-        std::ofstream out(tmp_path, std::ios::out | std::ios::trunc);
-        if (!out)
-            return false;
+    const std::string content = "# StrataDB instance identity. Do not modify or delete.\n" + id.to_string() + '\n';
+    const int fd = ::open(tmp_path.c_str(), // NOLINT(cppcoreguidelines-pro-type-vararg)
+                          O_WRONLY | O_CREAT | O_TRUNC,
+                          0644);
+    if (fd < 0)
+        return false;
 
-        out << "# StrataDB instance identity. Do not modify or delete.\n" << id.to_string() << '\n';
+    const auto* data = content.data();
+    auto remaining = content.size();
 
-        if (!out)
+    while (remaining > 0) {
+        const ssize_t n = ::write(fd, data, remaining);
+        if (n <= 0) {
+            ::close(fd);
+            ::unlink(tmp_path.c_str());
             return false;
-        out.flush();
-        if (!out)
-            return false;
+        }
+        data += n;
+        remaining -= static_cast<std::size_t>(n);
+    }
+    if (!utils::os::sync_data(fd)) {
+        ::close(fd);
+        ::unlink(tmp_path.c_str());
+        return false;
+    }
+    ::close(fd);
+    // Rename is atomic on POSIX; on Windows it is best-effort.
+    if (::rename(tmp_path.c_str(), identity_path.c_str()) != 0) {
+        ::unlink(tmp_path.c_str());
+        return false;
     }
 
-    // Rename is atomic on POSIX; on Windows it is best-effort.
-    std::error_code ec;
-    std::filesystem::rename(tmp_path, identity_path, ec);
-    if (ec) {
-        std::filesystem::remove(tmp_path, ec);
-        return false;
+    // Best-effort: if this fails the rename is visible in the journal and will
+    // survive all but the most pathological power-loss scenarios.
+    const int dir_fd = ::open(identity_path.parent_path().c_str(), // NOLINT
+                              O_RDONLY | O_DIRECTORY);
+    if (dir_fd >= 0) {
+        ::fsync(dir_fd);
+        ::close(dir_fd);
     }
 
     return true;
 }
 
-auto DbIdentity::to_string() const noexcept -> std::string {
-    static constexpr char kHex[] = "0123456789abcdef";
+static auto try_read_identity(const std::filesystem::path& path) noexcept -> std::optional<DbIdentity> {
+    const int fd = ::open(path.c_str(), O_RDONLY); // NOLINT
+    if (fd < 0)
+        return std::nullopt;
 
-    std::string s;
-    s.reserve(36);
+    char buf[128]{};
+    const ssize_t n = ::read(fd, buf, sizeof(buf) - 1);
+    ::close(fd);
 
-    static constexpr std::size_t kDashAfter[] = {3, 5, 7, 9}; // byte indices after which to insert '-'
+    if (n <= 0)
+        return std::nullopt;
 
-    for (std::size_t i = 0; i < 16; ++i) {
-        s += kHex[bytes[i] >> 4];
-        s += kHex[bytes[i] & 0x0FU];
+    // Scan line by line; skip comment lines.
+    std::string_view content{buf, static_cast<std::size_t>(n)};
+    std::size_t pos = 0;
 
-        for (auto d : kDashAfter) {
-            if (i == d) {
-                s += '-';
-                break;
-            }
+    while (pos < content.size()) {
+        const std::size_t end = content.find('\n', pos);
+        const std::size_t line_end = (end == std::string_view::npos) ? content.size() : end;
+
+        std::string_view line = content.substr(pos, line_end - pos);
+        pos = (end == std::string_view::npos) ? content.size() : end + 1;
+
+        // Trim trailing CR
+        if (!line.empty() && line.back() == '\r')
+            line.remove_suffix(1);
+
+        if (!line.empty() && line[0] != '#') {
+            return parse_uuid(line);
         }
     }
 
-    return s;
+    return std::nullopt;
 }
 
 auto load_or_create_identity(const std::filesystem::path& data_dir) noexcept
@@ -132,30 +198,17 @@ auto load_or_create_identity(const std::filesystem::path& data_dir) noexcept
 
     const auto identity_path = data_dir / "IDENTITY";
 
+    // try_read_identity returns nullopt for missing, empty, or unparseable files —
+    // all treated identically: generate a new UUID and overwrite.
     std::error_code ec;
     if (std::filesystem::exists(identity_path, ec) && !ec) {
-        std::ifstream in(identity_path);
-        if (!in)
-            return std::unexpected(DBIdentityError::IOError);
-
-        std::string line;
-        while (std::getline(in, line)) {
-            if (!line.empty() && line[0] != '#') {
-                // Trim trailing whitespace / CR
-                while (!line.empty() && (line.back() == '\r' || line.back() == '\n' || line.back() == ' ')) {
-                    line.pop_back();
-                }
-                auto result = parse_uuid(line);
-                if (!result)
-                    return std::unexpected(DBIdentityError::ParseError);
-                return *result;
-            }
-        }
-        return std::unexpected(DBIdentityError::ParseError);
+        auto maybe_id = try_read_identity(identity_path);
+        if (maybe_id.has_value())
+            return *maybe_id;
+        // Fall through: file corrupt, recreate below.
     }
-
+    // Generate a new UUID and write it with full fsync durability.
     const DbIdentity id = generate_uuid_v4();
-
     if (!write_identity_atomic(identity_path, id)) {
         return std::unexpected(DBIdentityError::IOError);
     }

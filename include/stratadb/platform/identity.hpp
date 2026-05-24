@@ -14,12 +14,13 @@ struct DbIdentity {
 };
 
 enum class DBIdentityError : std::uint8_t {
-    IOError,    // Failed to read/write the identity file
-    ParseError, // Failed to parse the identity file
+    IOError, // Failed to read/write the identity file
+
 };
 
 // Reads <data_dir>/IDENTITY and returns its UUID.
-// On first run (file absent) generates a UUID v4, writes the file atomically, and returns it.
+// On first run (file absent) or a corrupted file (partial write survived a crash),
+// generates a fresh UUID v4, writes the file with full fsync durability, and returns it.
 [[nodiscard]] auto load_or_create_identity(const std::filesystem::path& data_dir) noexcept
     -> std::expected<DbIdentity, DBIdentityError>;
 
