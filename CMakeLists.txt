@@ -108,6 +108,7 @@ add_library(stratadb STATIC
   src/utils/simd.cpp
   src/memory/virtual_region.cpp
   src/platform/identity.cpp
+  src/platform/hardware_probe.cpp
 )
 
 target_include_directories(stratadb PUBLIC include PRIVATE src)
