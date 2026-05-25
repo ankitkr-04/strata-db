@@ -6,7 +6,7 @@
 #include <cstdint>
 #include <filesystem>
 
-namespace stratadb::wal::slot {
+namespace stratadb::wal::ring {
 enum class WalSlotState : uint8_t {
     Empty = 0,    // No file on disk, or awaiting BG recycle
     Creating = 1, // BG: fallocate + header write in progress
