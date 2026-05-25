@@ -1,19 +1,29 @@
 #include "stratadb/wal/manager.hpp"
 
-#include "stratadb/config/config_manager.hpp"       // ConfigManager::get_mutable()
-#include "stratadb/config/immutable/wal_config.hpp" // SpscMode
+#include "stratadb/config/config_manager.hpp"
+#include "stratadb/config/immutable/wal_config.hpp"
 #include "stratadb/utils/os.hpp"
+#include "stratadb/wal/reader/validator.hpp"
+#include "stratadb/wal/ring/ring.hpp"
 
 #include <sys/uio.h>
 
 namespace stratadb::wal {
 
-// Selection logic:
-//   - Rotational media        → DeltaBlock (per-sector CRC, no RMW on spinning disk)
-//   - 16 KiB physical sectors → GammaBlock<16384>
-//   - Default (NVMe 4 KiB)    → GammaBlock<4096>
-//   - SPSC (ManualOverride)   → SpscMailboxQueue (busy-polling flusher)
-//   - Otherwise               → VyukovMpscQueue  (futex-sleeping flusher)
+namespace {
+
+[[nodiscard]] auto determine_layout(const platform::HardwareInfo::Io& io) noexcept -> reader::BlockLayout {
+    if (io.is_rotational) {
+        return reader::BlockLayout::Delta4K;
+    }
+    if (io.physical_sector_size == 16384) {
+        return reader::BlockLayout::Gamma16K;
+    }
+    return reader::BlockLayout::Gamma4K;
+}
+
+} // namespace
+
 auto WalManager::make_pipeline(const platform::HardwareInfo::Io& io_info,
                                const config::WalConfig& cfg,
                                memory::BlockPool& pool,
@@ -28,34 +38,34 @@ auto WalManager::make_pipeline(const platform::HardwareInfo::Io& io_info,
         return use_spsc ? StagingVariant{std::in_place_type<Ssd16kSpscPipeline>, pool, lsn_gen}
                         : StagingVariant{std::in_place_type<Ssd16kMpscPipeline>, pool, lsn_gen};
     }
-    // Default: NVMe/SATA SSD with 4 KiB or 512B sectors (we pad to 4K safely)
     return use_spsc ? StagingVariant{std::in_place_type<Ssd4kSpscPipeline>, pool, lsn_gen}
                     : StagingVariant{std::in_place_type<Ssd4kMpscPipeline>, pool, lsn_gen};
 }
 
-// Initializer list order MUST match the declaration order in manager.hpp:
-//   wal_config_ → config_mgr_ → fd_ → hw_info_ → engine_ → pool_
-//   → lsn_generator_ → pipeline_ → ...
 WalManager::WalManager(const config::WalConfig& wal_cfg,
                        const config::BlockPoolConfig& pool_cfg,
                        const config::ConfigManager& config_mgr,
-                       io::UniqueFd fd,
+                       std::filesystem::path wal_dir,
                        const platform::HardwareInfo& hw_info,
                        const platform::DbIdentity& db_identity)
     : wal_config_(wal_cfg)
     , config_mgr_(config_mgr)
-    , fd_(std::move(fd))
-    , hw_info_(hw_info)    // 1. Store the global hardware truth
-    , engine_(hw_info_.io) // 2. Pass the IO slice to the engine
+    , hw_info_(hw_info)
+    , engine_(hw_info_.io)
     , pool_(pool_cfg)
     , lsn_generator_{1}
-    , pipeline_(make_pipeline(hw_info_.io, wal_config_, pool_, lsn_generator_)) // 3. Build the pipeline
-    , db_identity_(db_identity) {}
+    , pipeline_(make_pipeline(hw_info_.io, wal_config_, pool_, lsn_generator_))
+    , db_identity_(db_identity)
+    , wal_ring_(std::make_unique<ring::WalRing>(std::move(wal_dir),
+                                                determine_layout(hw_info_.io),
+                                                wal_cfg.slot_size_bytes,
+                                                static_cast<uint8_t>(wal_cfg.preallocated_pool_size + 2),
+                                                wal_cfg.preallocated_pool_size,
+                                                db_identity_.bytes)) {}
 
 WalManager::~WalManager() {
     stop_requested_.store(true, std::memory_order_release);
     std::visit([](auto& p) { p.shutdown(); }, pipeline_);
-    // flusher_thread_ joins automatically.
 }
 
 void WalManager::start_flusher() {
@@ -88,20 +98,21 @@ void WalManager::flush() noexcept {
 
 void WalManager::flusher_loop() {
     if (wal_config_.spsc.mode == config::SpscMode::ManualOverride) {
-        // We can now safely validate the core_id against our hardware info
-        auto core_id = wal_config_.spsc.core_id.value();
+        const auto core_id = wal_config_.spsc.core_id.value();
         if (core_id < hw_info_.cpu.logical_count) {
             if (!utils::os::pin_current_thread_to_core(core_id)) {
-                // Log: core pinning failed
             }
         }
-
         if (wal_config_.spsc.request_realtime_priority) {
             if (!utils::os::elevate_to_realtime_priority()) {
-                // Log: RT elevation failed
             }
         }
     }
+
+    if (wal_ring_->recovery_slot_index() != UINT8_MAX) {
+        wal_ring_->seal_active_slot_only();
+    }
+    wal_ring_->ensure_active_slot();
 
     while (true) {
         bool performed_work = false;
@@ -109,6 +120,10 @@ void WalManager::flusher_loop() {
 
         std::visit(
             [&](auto& active_pipeline) {
+                const auto tuning_guard = config_mgr_.get_mutable();
+                const bool should_sync = tuning_guard->wal_tuning.sync_on_commit;
+                const float trigger_ratio = tuning_guard->wal_tuning.precreate_trigger_ratio;
+
                 while (true) {
                     auto [payload_base, free_base] = active_pipeline.pop_ready_block();
                     if (!payload_base) {
@@ -125,22 +140,30 @@ void WalManager::flusher_loop() {
                     }
 
                     if (!node->memory_to_write.empty()) {
+                        const size_t block_size = node->memory_to_write.size();
+
+                        if (wal_ring_->needs_rotation(block_size)) {
+                            wal_ring_->seal_and_rotate();
+                        }
+
                         struct iovec iov{
                             .iov_base = const_cast<void*>(static_cast<const void*>(node->memory_to_write.data())),
-                            .iov_len = node->memory_to_write.size(),
+                            .iov_len = block_size,
                         };
 
-                        // FUTURE RING BUFFER INJECTION POINT:
-                        // Here is where we will check if (current_file_offset_ + iov.iov_len > slot_size)
-                        // and trigger the WalSlot sealing (writing Footer) and ring buffer advance.
-                        const std::uint64_t file_offset = current_file_offset_.load(std::memory_order_relaxed);
-
-                        auto result = engine_.writev(fd_.get(), std::span(&iov, 1), file_offset);
+                        auto result = engine_.writev(wal_ring_->active_fd(),
+                                                     std::span(&iov, 1),
+                                                     wal_ring_->active_write_offset());
 
                         if (result.has_value()) {
-                            current_file_offset_.fetch_add(iov.iov_len, std::memory_order_relaxed);
+                            wal_ring_->advance_write_offset(iov.iov_len);
+
+                            wal_ring_->record_block_lsn(node->max_lsn);
+
+                            if (wal_ring_->active_fill_ratio() >= trigger_ratio) {
+                                wal_ring_->notify_precreate();
+                            }
                         } else {
-                            // Fatal I/O error
                         }
                     }
 
@@ -151,17 +174,13 @@ void WalManager::flusher_loop() {
                 }
 
                 if (performed_work) {
-                    const bool should_sync = config_mgr_.get_mutable()->wal_tuning.sync_on_commit;
-
                     if (should_sync) {
-                        auto sync_result = engine_.sync(fd_.get());
-                        if (!sync_result) {
-                            // Fatal sync failure
+                        if (!engine_.sync(wal_ring_->active_fd())) {
                         }
                     }
 
                     if (highest_lsn_in_batch > 0) {
-                        std::uint64_t cur = durable_lsn_.load(std::memory_order_relaxed);
+                        uint64_t cur = durable_lsn_.load(std::memory_order_relaxed);
                         while (highest_lsn_in_batch > cur
                                && !durable_lsn_.compare_exchange_weak(cur,
                                                                       highest_lsn_in_batch,
@@ -179,6 +198,7 @@ void WalManager::flusher_loop() {
             pipeline_);
 
         if (!performed_work && stop_requested_.load(std::memory_order_acquire)) {
+            wal_ring_->seal_active_slot_only();
             break;
         }
     }

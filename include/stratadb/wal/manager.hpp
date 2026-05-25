@@ -3,7 +3,6 @@
 #include "stratadb/config/immutable/block_pool_config.hpp"
 #include "stratadb/config/immutable/wal_config.hpp"
 #include "stratadb/io/posix_io_engine.hpp"
-#include "stratadb/io/unique_file_descriptor.hpp"
 #include "stratadb/memory/block_pool.hpp"
 #include "stratadb/platform/hardware_model.hpp"
 #include "stratadb/platform/identity.hpp"
@@ -12,6 +11,8 @@
 
 #include <atomic>
 #include <cstdint>
+#include <filesystem>
+#include <memory>
 #include <span>
 #include <string>
 #include <thread>
@@ -21,7 +22,11 @@
 
 namespace stratadb::config {
 class ConfigManager;
-} // namespace stratadb::config
+}
+
+namespace stratadb::wal::ring {
+class WalRing;
+}
 
 namespace stratadb::wal {
 
@@ -32,7 +37,7 @@ class WalManager {
     WalManager(const config::WalConfig& wal_cfg,
                const config::BlockPoolConfig& pool_cfg,
                const config::ConfigManager& config_mgr,
-               io::UniqueFd fd,
+               std::filesystem::path wal_dir,
                const platform::HardwareInfo& hw_info,
                const platform::DbIdentity& db_identity);
 
@@ -51,7 +56,6 @@ class WalManager {
     [[nodiscard]] auto hw_info() const noexcept -> const platform::HardwareInfo& {
         return hw_info_;
     }
-
     [[nodiscard]] auto db_identity() const noexcept -> const platform::DbIdentity& {
         return db_identity_;
     }
@@ -60,7 +64,6 @@ class WalManager {
     config::WalConfig wal_config_;
     const config::ConfigManager& config_mgr_;
 
-    io::UniqueFd fd_;
     platform::HardwareInfo hw_info_;
     io::PosixIoEngine engine_;
 
@@ -69,10 +72,12 @@ class WalManager {
     alignas(utils::CACHE_LINE_SIZE) std::atomic<std::uint64_t> lsn_generator_{1};
 
     StagingVariant pipeline_;
+
     platform::DbIdentity db_identity_;
 
+    std::unique_ptr<ring::WalRing> wal_ring_;
+
     alignas(utils::CACHE_LINE_SIZE) std::atomic<std::uint64_t> durable_lsn_{0};
-    alignas(utils::CACHE_LINE_SIZE) std::atomic<std::uint64_t> current_file_offset_{0};
 
     std::atomic<bool> stop_requested_{false};
     std::jthread flusher_thread_{};
