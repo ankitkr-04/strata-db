@@ -33,4 +33,4 @@ struct WalSlot {
     auto operator=(WalSlot&&) -> WalSlot& = delete;
 };
 
-} // namespace stratadb::wal::slot
+} // namespace stratadb::wal::ring
