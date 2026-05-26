@@ -22,7 +22,7 @@ class UniqueFd {
     constexpr UniqueFd(UniqueFd&& other) noexcept
         : fd_(std::exchange(other.fd_, -1)) {}
 
-    constexpr auto operator=(UniqueFd&& other) noexcept -> UniqueFd& {
+    auto operator=(UniqueFd&& other) noexcept -> UniqueFd& {
         if (this != &other) {
             reset(std::exchange(other.fd_, -1));
         }
