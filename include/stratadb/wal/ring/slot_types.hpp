@@ -8,11 +8,12 @@
 
 namespace stratadb::wal::ring {
 enum class WalSlotState : uint8_t {
-    Empty = 0,    // No file on disk, or awaiting BG recycle
-    Creating = 1, // BG: fallocate + header write in progress
-    Ready = 2,    // Pre-allocated, fdatasync'd; awaiting Flusher activation
-    Active = 3,   // Flusher is writing blocks here (single owner)
-    Sealed = 4,   // Footer written + fdatasync'd; awaiting checkpoint / recycle
+    Empty = 0,      // No file on disk, or awaiting BG recycle
+    Creating = 1,   // BG: fallocate + header write in progress
+    Ready = 2,      // Pre-allocated, fdatasync'd; awaiting Flusher activation
+    Active = 3,     // Flusher is writing blocks here (single owner)
+    Sealed = 4,     // data on disk; NOT safe to recycle until checkpoint confirms
+    Recyclable = 5, // engine confirmed all LSNs flushed to SSTables; safe to overwrite
 };
 
 struct WalSlot {

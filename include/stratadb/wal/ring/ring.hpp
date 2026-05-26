@@ -75,6 +75,10 @@ class WalRing {
     // Block until at least one Ready slot exists or ring is stopping.
     void wait_for_ready_slot() noexcept;
 
+    // Transitions Sealed → Recyclable for any slot with max_lsn <= checkpoint_lsn.
+    // Safe to call from any thread.
+    void release_wal_up_to(uint64_t checkpoint_lsn) noexcept;
+
     [[nodiscard]] auto ready_slot_count() const noexcept -> uint8_t;
     [[nodiscard]] auto slot_path(uint8_t i) const -> std::filesystem::path;
 
