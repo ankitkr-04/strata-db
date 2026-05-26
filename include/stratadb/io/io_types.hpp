@@ -12,6 +12,7 @@ enum class IOError : std::uint8_t {
     AlignmentViolation,
     HardwareError,
     DeviceFull,
+    PermissionDenied,
     UnknownError,
 };
 
