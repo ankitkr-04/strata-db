@@ -69,6 +69,9 @@ struct alignas(4096) GammaBlock {
 
         auto* base = reinterpret_cast<std::byte*>(this);
 
+        std::memcpy(base + append_offset_, &WALR_MARKER, sizeof(WALR_MARKER));
+        append_offset_ += sizeof(WALR_MARKER);
+
         std::memcpy(base + append_offset_, &k_len, sizeof(k_len));
         append_offset_ += sizeof(k_len);
 

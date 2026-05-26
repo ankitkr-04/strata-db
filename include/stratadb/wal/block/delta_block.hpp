@@ -60,7 +60,7 @@ struct alignas(4096) DeltaBlock {
     [[nodiscard]] auto append(std::span<const std::byte> key, std::span<const std::byte> value) noexcept -> bool {
         const auto k_len = static_cast<std::uint32_t>(key.size());
         const auto v_len = static_cast<std::uint32_t>(value.size());
-        const std::size_t total_required = sizeof(k_len) + sizeof(v_len) + k_len + v_len;
+        const std::size_t total_required = sizeof(WALR_MARKER) + sizeof(k_len) + sizeof(v_len) + k_len + v_len;
 
         // Simulate the append to check capacity before committing any bytes.
         std::size_t simulated = append_offset_;
@@ -79,7 +79,8 @@ struct alignas(4096) DeltaBlock {
             return false;
         }
 
-        const std::array<std::span<const std::byte>, 4> parts = {
+        const std::array<std::span<const std::byte>, 5> parts = {
+            std::span<const std::byte>(reinterpret_cast<const std::byte*>(&WALR_MARKER), sizeof(WALR_MARKER)),
             std::span<const std::byte>(reinterpret_cast<const std::byte*>(&k_len), sizeof(k_len)),
             std::span<const std::byte>(reinterpret_cast<const std::byte*>(&v_len), sizeof(v_len)),
             key,

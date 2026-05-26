@@ -6,6 +6,8 @@
 #include <span>
 
 namespace stratadb::wal {
+// 4-byte little-endian frame marker: "WALR" (WAL Record)
+inline constexpr std::uint32_t WALR_MARKER = 0x57414C52U;
 
 // MpscNode — intrusive linked-list node; the base currency of WAL queues.
 //

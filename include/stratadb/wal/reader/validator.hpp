@@ -4,6 +4,7 @@
 #include "stratadb/utils/hash.hpp"
 #include "stratadb/utils/simd.hpp"
 #include "stratadb/utils/xxhash.hpp"
+#include "stratadb/wal/types.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -40,7 +41,7 @@ struct TearCheckResult {
 };
 
 // 4-byte little-endian frame marker: "WALR"
-inline constexpr std::uint32_t WALR_MARKER = 0x57414C52U;
+inline constexpr std::uint32_t WALR_MARKER = wal::WALR_MARKER;
 
 // DeltaBlock sector geometry constants.
 inline constexpr std::size_t DELTA_SECTOR_SIZE = 4096;
