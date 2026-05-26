@@ -1,7 +1,11 @@
 #pragma once
 
+#include "stratadb/io/io_types.hpp"
+
 #include <cstddef>
 #include <cstdint>
+#include <expected>
+#include <filesystem>
 #include <optional>
 
 namespace stratadb::utils::os {
@@ -32,5 +36,26 @@ void close_fd(int fd) noexcept;
 // core id, which is the best candidate for SPSC busy-polling.
 // Returns nullopt if no isolated cores are configured.
 [[nodiscard]] auto auto_discover_isolated_core() noexcept -> std::optional<std::uint32_t>;
+
+// Returns a raw FileHandle; wrap in io::UniqueFd at the call site.
+// create=true  → O_RDWR | O_CREAT | O_TRUNC
+// create=false → O_RDWR
+[[nodiscard]] auto open_buffered(const std::filesystem::path& path, bool create = false) noexcept
+    -> std::expected<io::FileHandle, io::IOError>;
+
+// Linux: O_RDWR | O_DIRECT.  macOS: O_RDWR + F_NOCACHE.
+[[nodiscard]] auto open_direct(const std::filesystem::path& path) noexcept
+    -> std::expected<io::FileHandle, io::IOError>;
+
+// posix_fallocate — extends EOF, must be called on a buffered fd.
+[[nodiscard]] auto allocate_file_space(int fd, std::uint64_t bytes) noexcept -> std::expected<void, io::IOError>;
+
+// pread loop — retries on EINTR, errors on short read.
+[[nodiscard]] auto read_exact(int fd, void* buf, std::size_t size, std::uint64_t offset) noexcept
+    -> std::expected<void, io::IOError>;
+
+// pwrite loop — retries on EINTR, errors on short write.
+[[nodiscard]] auto write_exact(int fd, const void* buf, std::size_t size, std::uint64_t offset) noexcept
+    -> std::expected<void, io::IOError>;
 
 } // namespace stratadb::utils::os
