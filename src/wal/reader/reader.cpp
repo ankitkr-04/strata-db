@@ -5,13 +5,13 @@
 #include "stratadb/wal/block/delta_block.hpp"
 #include "stratadb/wal/block/gamma_block.hpp"
 #include "stratadb/wal/slot/slot_header.hpp"
-#include "stratadb/wal/types.hpp"
 
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
 
 namespace stratadb::wal::reader {
+
 #pragma pack(push, 1)
 struct SerializedRecordHeader {
     std::uint32_t marker;
@@ -70,11 +70,13 @@ auto WalReader::recover(RecordCallback callback) noexcept -> RecoveryResult {
     RecoveryResult result{};
     auto snapshots = wal_ring_.snapshot_slots();
 
+    // Only Sealed and Active slots contain data.
     const auto [first, last] = std::ranges::remove_if(snapshots, [](const auto& snap) -> auto {
         return snap.state != ring::WalSlotState::Sealed && snap.state != ring::WalSlotState::Active;
     });
     snapshots.erase(first, last);
 
+    // Process sequentially by sequence number.
     std::ranges::sort(snapshots, [](const auto& a, const auto& b) -> bool { return a.sequence < b.sequence; });
 
     std::uint64_t prev_lsn = 0; // track the last seen LSN to detect gaps in the WAL
@@ -97,9 +99,9 @@ auto WalReader::recover(RecordCallback callback) noexcept -> RecoveryResult {
     result.last_valid_lsn = prev_lsn;
     return result;
 }
+
 auto WalReader::recover_slot(const ring::WalRing::SlotSnapshot& snap,
                              RecordCallback& cb,
-
                              std::uint64_t& prev_lsn,
                              std::uint64_t& records_out) noexcept -> std::pair<RecoveryStatus, std::uint64_t> {
     // Open with O_DIRECT: our buffer (4096-aligned) and offsets (multiples of
@@ -137,10 +139,10 @@ auto WalReader::recover_slot(const ring::WalRing::SlotSnapshot& snap,
         if (seq == 0) {
             return {RecoveryStatus::Clean, last_good_offset};
         }
+
         // Records are always packed starting immediately after the block header.
         // A missing marker means either: no records were written (impossible for
         // a sealed block), or the data region is corrupt / torn.
-
         bool marker_found = false;
         if (blk_size >= hdr_sz + sizeof(std::uint32_t)) {
             std::uint32_t first_word = 0;
@@ -161,8 +163,9 @@ auto WalReader::recover_slot(const ring::WalRing::SlotSnapshot& snap,
 
         // Torn write detection:
         auto tear = check_for_tear(marker_found, validation, prev_lsn, seq);
-        if (!tear.is_valid)
+        if (!tear.is_valid) {
             return {RecoveryStatus::TornWrite, last_good_offset};
+        }
 
         // parse the records in the block:
         bool parse_ok = false;
@@ -199,19 +202,15 @@ auto WalReader::parse_gamma_block(const std::uint8_t* block_buf,
 
     while (cursor + kRecordHeaderSize <= valid_data_end) {
         // Parse record header.
-        std::uint32_t marker = 0;
-        std::memcpy(&marker, block_buf + cursor, sizeof(marker));
-        if (marker != WALR_MARKER) {
+        SerializedRecordHeader rec_hdr{};
+        std::memcpy(&rec_hdr, block_buf + cursor, sizeof(rec_hdr));
+
+        if (rec_hdr.marker != WALR_MARKER) {
             // Zero-padding written by sector_aligned_end() zero-fill — clean stop.
             break;
         }
 
-        std::uint32_t k_len = 0;
-        std::uint32_t v_len = 0;
-        std::memcpy(&k_len, block_buf + cursor + 4, sizeof(k_len));
-        std::memcpy(&v_len, block_buf + cursor + 8, sizeof(v_len));
-
-        const std::size_t record_end = cursor + kRecordHeaderSize + k_len + v_len;
+        const std::size_t record_end = cursor + kRecordHeaderSize + rec_hdr.key_len + rec_hdr.val_len;
         if (record_end > valid_data_end) {
             // Truncated payload inside a hash-valid block: data integrity failure.
             return false;
@@ -219,8 +218,9 @@ auto WalReader::parse_gamma_block(const std::uint8_t* block_buf,
 
         cb(RecoveredRecord{
             .lsn = block_seq,
-            .key = {reinterpret_cast<const std::byte*>(block_buf + cursor + kRecordHeaderSize), k_len},
-            .value = {reinterpret_cast<const std::byte*>(block_buf + cursor + kRecordHeaderSize + k_len), v_len},
+            .key = {reinterpret_cast<const std::byte*>(block_buf + cursor + kRecordHeaderSize), rec_hdr.key_len},
+            .value = {reinterpret_cast<const std::byte*>(block_buf + cursor + kRecordHeaderSize + rec_hdr.key_len),
+                      rec_hdr.val_len},
         });
         ++records_out;
 
@@ -229,13 +229,14 @@ auto WalReader::parse_gamma_block(const std::uint8_t* block_buf,
 
     return true;
 }
+
 auto WalReader::linearize_delta(const std::uint8_t* raw, std::size_t raw_size) noexcept -> std::size_t {
     constexpr std::size_t kDeltaHdrSize = sizeof(DeltaBlock<>::Header);
 
     std::size_t dst = 0;
     std::size_t src = kDeltaHdrSize;
 
-    while (src < raw_size && dst < raw_size) {
+    while (src < raw_size && dst < kScratchSize) {
         const std::size_t intra = src & (kDeltaSectorSize - 1);
 
         if (intra >= kDeltaCrcOffset) {
