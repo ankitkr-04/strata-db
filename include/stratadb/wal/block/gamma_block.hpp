@@ -38,7 +38,7 @@ struct alignas(4096) GammaBlock {
         XXH128_hash_t block_hash{.low64 = 0, .high64 = 0}; // 16 bytes — XXH3-128
         std::uint16_t record_count{0};
         std::uint16_t flags{0};
-        std::uint32_t _padding{0}; // pad to 32 bytes total
+        std::uint32_t valid_data_end_offset{0};
     } header;
 
     static_assert(sizeof(Header) == 32, "GammaBlock::Header must be exactly 32 bytes");
@@ -53,6 +53,7 @@ struct alignas(4096) GammaBlock {
         header.block_hash = {0, 0};
         header.record_count = 0;
         header.flags = 0;
+        header.valid_data_end_offset = 0;
         append_offset_ = sizeof(Header);
         flush_offset_ = 0;
     }
@@ -131,6 +132,8 @@ struct alignas(4096) GammaBlock {
         // Stamp the whole-block XXH3-128 digest into the header.
         // Because we zero the hash field before computing, the digest is
         // deterministic regardless of previous partial flushes.
+        // Stampt the extent First
+        header.valid_data_end_offset = static_cast<std::uint32_t>(end_offset);
         header.block_hash = {0, 0};
         header.block_hash = utils::xxhash3_128(this, end_offset);
 
