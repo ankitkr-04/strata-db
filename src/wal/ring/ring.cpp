@@ -125,6 +125,21 @@ void WalRing::record_block_lsn(std::uint64_t lsn) noexcept {
     slot.max_lsn = lsn; // always updated — captures the last block written
 }
 
+auto WalRing::snapshot_slots() const noexcept -> std::vector<SlotSnapshot> {
+    std::vector<SlotSnapshot> out;
+    out.reserve(ring_capacity_);
+    for (std::uint8_t i = 0; i < ring_capacity_; ++i) {
+        out.push_back({
+            .ring_index = i,
+            .sequence = slots_[i].sequence,
+            .state = slots_[i].state.load(std::memory_order_acquire),
+            .write_offset = slots_[i].write_offset,
+            .path = slots_[i].path,
+        });
+    }
+    return out;
+}
+
 void WalRing::seal_and_rotate() noexcept {
     assert(active_index_ != UINT8_MAX);
 

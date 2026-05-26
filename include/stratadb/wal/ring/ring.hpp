@@ -12,10 +12,20 @@
 #include <filesystem>
 #include <mutex>
 #include <thread>
+#include <vector>
 
 namespace stratadb::wal::ring {
 class WalRing {
   public:
+    // Snapshot of one slot's metadata for the WAL reader.
+    // Captured atomically enough for single-threaded recovery use.
+    struct SlotSnapshot {
+        std::uint8_t ring_index{UINT8_MAX};
+        std::uint64_t sequence{0};
+        WalSlotState state{WalSlotState::Empty};
+        std::uint64_t write_offset{0}; // upper bound of written data
+        std::filesystem::path path{};
+    };
     static constexpr std::uint8_t MAX_RING_CAPACITY = 7U;
     WalRing(std::filesystem::path wal_dir,
             reader::BlockLayout layout,
@@ -78,6 +88,10 @@ class WalRing {
     // Transitions Sealed → Recyclable for any slot with max_lsn <= checkpoint_lsn.
     // Safe to call from any thread.
     void release_wal_up_to(uint64_t checkpoint_lsn) noexcept;
+
+    // Returns a snapshot of all ring slots. Safe to call from any thread
+    // (uses acquire loads). Intended for the WAL reader during recovery.
+    [[nodiscard]] auto snapshot_slots() const noexcept -> std::vector<SlotSnapshot>;
 
     [[nodiscard]] auto ready_slot_count() const noexcept -> uint8_t;
     [[nodiscard]] auto slot_path(uint8_t i) const -> std::filesystem::path;
