@@ -41,6 +41,9 @@ struct alignas(4096) GammaBlock {
         std::uint32_t valid_data_end_offset{0};
     } header;
 
+    static constexpr std::size_t RECORD_ALIGNMENT = 8;
+    static constexpr std::size_t ALIGNMENT_MASK = RECORD_ALIGNMENT - 1;
+
     static_assert(sizeof(Header) == 32, "GammaBlock::Header must be exactly 32 bytes");
 
     alignas(8) std::array<std::byte, BlockSize - sizeof(Header)> arena{};
@@ -88,7 +91,7 @@ struct alignas(4096) GammaBlock {
         ++header.record_count;
 
         // Align to 8 bytes so the next record header is naturally aligned.
-        append_offset_ = (append_offset_ + 7U) & ~static_cast<std::size_t>(7U);
+        append_offset_ = (append_offset_ + ALIGNMENT_MASK) & ~static_cast<std::size_t>(ALIGNMENT_MASK);
         if (append_offset_ > BlockSize) {
             append_offset_ = BlockSize; // safety clamp (should never fire)
         }

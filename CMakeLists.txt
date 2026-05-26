@@ -110,6 +110,7 @@ add_library(stratadb STATIC
   src/platform/identity.cpp
   src/platform/hardware_probe.cpp
   src/wal/ring/ring.cpp
+  src/wal/reader/reader.cpp
 )
 
 target_include_directories(stratadb PUBLIC include PRIVATE src)
