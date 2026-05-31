@@ -106,6 +106,9 @@ if [[ "$SKIP_BUILD" == false ]]; then
   cmake -S . -B "${BUILD_DIR}" -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
     -DSTRATADB_BUILD_BENCHMARKS=ON \
+    -DSTRATADB_ENABLE_ASAN=OFF \
+    -DSTRATADB_ENABLE_UBSAN=OFF \
+    -DSTRATADB_ENABLE_TSAN=OFF \
     -DSTRATADB_ENABLE_PROFILING="${PROFILING_FLAG}"
 
   if [[ "$TARGET" == "all" ]]; then

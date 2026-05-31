@@ -19,6 +19,8 @@ alignas(64) std::atomic<ssize_t> mock_short_write_bytes{-1};
 namespace {
 
 inline void assert_aligned(const void* ptr, size_t alignment) noexcept {
+    (void)ptr;
+    (void)alignment;
     assert(reinterpret_cast<uintptr_t>(ptr) % alignment == 0);
 }
 
