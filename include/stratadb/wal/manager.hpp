@@ -24,8 +24,8 @@ namespace stratadb::config {
 class ConfigManager;
 }
 
-namespace stratadb::wal::ring {
-class WalRing;
+namespace stratadb::wal::pool {
+class WalSegmentPool;
 }
 
 namespace stratadb::wal {
@@ -75,7 +75,7 @@ class WalManager {
 
     platform::DbIdentity db_identity_;
 
-    std::unique_ptr<ring::WalRing> wal_ring_;
+    std::unique_ptr<pool::WalSegmentPool> wal_segment_pool_;
 
     alignas(utils::CACHE_LINE_SIZE) std::atomic<std::uint64_t> durable_lsn_{0};
 

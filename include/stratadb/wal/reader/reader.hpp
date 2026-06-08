@@ -1,15 +1,13 @@
 #pragma once
 
+#include "stratadb/wal/pool/segment_pool.hpp"
 #include "stratadb/wal/reader/validator.hpp"
-#include "stratadb/wal/ring/ring.hpp"
-#include "stratadb/wal/ring/slot_types.hpp"
 
 #include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <span>
 #include <utility>
-#include <vector>
 
 namespace stratadb::wal::reader {
 // A single recovered KV record yielded to the caller's callback.
@@ -44,7 +42,7 @@ struct RecoveryResult {
 
 class WalReader {
   public:
-    explicit WalReader(ring::WalRing& wal_ring, BlockLayout layout);
+    explicit WalReader(pool::WalSegmentPool& wal_ring, BlockLayout layout);
     ~WalReader();
 
     WalReader(const WalReader&) = delete;
@@ -55,7 +53,7 @@ class WalReader {
     [[nodiscard]] auto recover(RecordCallback callback) noexcept -> RecoveryResult;
 
   private:
-    ring::WalRing& wal_ring_;
+    pool::WalSegmentPool& wal_segment_pool_;
     BlockLayout layout_;
 
     // O_DIRECT-compatible read buffer.
@@ -76,7 +74,7 @@ class WalReader {
 
     // Returns {status, last_good_byte_offset_in_slot}.
     // Updates prev_lsn and records_out in-place.
-    [[nodiscard]] auto recover_slot(const ring::WalRing::SlotSnapshot& snap,
+    [[nodiscard]] auto recover_slot(const pool::WalSegmentPool::SegmentSnapshot& snap,
                                     RecordCallback& cb,
                                     std::uint64_t& prev_lsn,
                                     std::uint64_t& records_out) noexcept -> std::pair<RecoveryStatus, std::uint64_t>;

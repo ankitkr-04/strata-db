@@ -3,8 +3,8 @@
 #include "stratadb/config/config_manager.hpp"
 #include "stratadb/config/immutable/wal_config.hpp"
 #include "stratadb/utils/os.hpp"
+#include "stratadb/wal/pool/segment_pool.hpp"
 #include "stratadb/wal/reader/validator.hpp"
-#include "stratadb/wal/ring/ring.hpp"
 
 #include <sys/uio.h>
 
@@ -56,12 +56,12 @@ WalManager::WalManager(const config::WalConfig& wal_cfg,
     , lsn_generator_{1}
     , pipeline_(make_pipeline(hw_info_.io, wal_config_, pool_, lsn_generator_))
     , db_identity_(db_identity)
-    , wal_ring_(std::make_unique<ring::WalRing>(std::move(wal_dir),
-                                                determine_layout(hw_info_.io),
-                                                wal_cfg.slot_size_bytes,
-                                                static_cast<uint8_t>(wal_cfg.preallocated_pool_size + 2),
-                                                wal_cfg.preallocated_pool_size,
-                                                db_identity_.bytes)) {}
+    , wal_segment_pool_(std::make_unique<pool::WalSegmentPool>(std::move(wal_dir),
+                                                               determine_layout(hw_info_.io),
+                                                               wal_cfg.slot_size_bytes,
+                                                               static_cast<uint8_t>(wal_cfg.preallocated_pool_size + 2),
+                                                               wal_cfg.preallocated_pool_size,
+                                                               db_identity_.bytes)) {}
 
 WalManager::~WalManager() {
     stop_requested_.store(true, std::memory_order_release);
@@ -109,10 +109,10 @@ void WalManager::flusher_loop() {
         }
     }
 
-    if (wal_ring_->recovery_slot_index() != UINT8_MAX) {
-        wal_ring_->seal_active_slot_only();
+    if (wal_segment_pool_->recovery_segment_index() != UINT8_MAX) {
+        wal_segment_pool_->seal_active_segment_only();
     }
-    wal_ring_->ensure_active_slot();
+    wal_segment_pool_->ensure_active_segment();
 
     while (true) {
         bool performed_work = false;
@@ -142,8 +142,8 @@ void WalManager::flusher_loop() {
                     if (!node->memory_to_write.empty()) {
                         const size_t block_size = node->memory_to_write.size();
 
-                        if (wal_ring_->needs_rotation(block_size)) {
-                            wal_ring_->seal_and_rotate();
+                        if (wal_segment_pool_->needs_rotation(block_size)) {
+                            wal_segment_pool_->seal_and_rotate();
                         }
 
                         struct iovec iov{
@@ -151,17 +151,17 @@ void WalManager::flusher_loop() {
                             .iov_len = block_size,
                         };
 
-                        auto result = engine_.writev(wal_ring_->active_fd(),
+                        auto result = engine_.writev(wal_segment_pool_->active_fd(),
                                                      std::span(&iov, 1),
-                                                     wal_ring_->active_write_offset());
+                                                     wal_segment_pool_->active_write_offset());
 
                         if (result.has_value()) {
-                            wal_ring_->advance_write_offset(iov.iov_len);
+                            wal_segment_pool_->advance_write_offset(iov.iov_len);
 
-                            wal_ring_->record_block_lsn(node->max_lsn);
+                            wal_segment_pool_->record_block_lsn(node->max_lsn);
 
-                            if (wal_ring_->active_fill_ratio() >= trigger_ratio) {
-                                wal_ring_->notify_precreate();
+                            if (wal_segment_pool_->active_fill_ratio() >= trigger_ratio) {
+                                wal_segment_pool_->notify_precreate();
                             }
                         } else {
                         }
@@ -175,7 +175,7 @@ void WalManager::flusher_loop() {
 
                 if (performed_work) {
                     if (should_sync) {
-                        if (!engine_.sync(wal_ring_->active_fd())) {
+                        if (!engine_.sync(wal_segment_pool_->active_fd())) {
                         }
                     }
 
@@ -198,7 +198,7 @@ void WalManager::flusher_loop() {
             pipeline_);
 
         if (!performed_work && stop_requested_.load(std::memory_order_acquire)) {
-            wal_ring_->seal_active_slot_only();
+            wal_segment_pool_->seal_active_segment_only();
             break;
         }
     }

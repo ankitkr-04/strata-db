@@ -57,5 +57,12 @@ void close_fd(int fd) noexcept;
 // pwrite loop — retries on EINTR, errors on short write.
 [[nodiscard]] auto write_exact(int fd, const void* buf, std::size_t size, std::uint64_t offset) noexcept
     -> std::expected<void, io::IOError>;
+// Syncs the directory's metadata/journal to persistent storage.
+// Crucial after creating or deleting files to guarantee visibility after a crash.
+[[nodiscard]] auto sync_dir_entries(int fd) noexcept -> bool;
+
+// Returns a file descriptor for a directory.
+// Must be closed via close_fd() when the manager shuts down.
+[[nodiscard]] auto open_directory(const std::filesystem::path& path) noexcept -> std::expected<int, io::IOError>;
 
 } // namespace stratadb::utils::os

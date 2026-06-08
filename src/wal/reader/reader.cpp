@@ -4,6 +4,7 @@
 #include "stratadb/utils/os.hpp"
 #include "stratadb/wal/block/delta_block.hpp"
 #include "stratadb/wal/block/gamma_block.hpp"
+#include "stratadb/wal/pool/segment_pool.hpp"
 #include "stratadb/wal/slot/slot_header.hpp"
 
 #include <algorithm>
@@ -38,8 +39,8 @@ constexpr std::size_t kRecordHeaderSize = sizeof(SerializedRecordHeader);
 
 } // namespace
 
-WalReader::WalReader(ring::WalRing& wal_ring, BlockLayout layout)
-    : wal_ring_(wal_ring)
+WalReader::WalReader(pool::WalSegmentPool& wal_segment_pool, BlockLayout layout)
+    : wal_segment_pool_(wal_segment_pool)
     , layout_(layout)
     , read_buf_raw_(std::aligned_alloc(kReadBufAlign, kReadBufSize))
     , read_buf_(static_cast<std::uint8_t*>(read_buf_raw_)) {}
@@ -68,11 +69,11 @@ auto WalReader::header_size() const noexcept -> std::size_t {
 
 auto WalReader::recover(RecordCallback callback) noexcept -> RecoveryResult {
     RecoveryResult result{};
-    auto snapshots = wal_ring_.snapshot_slots();
+    auto snapshots = wal_segment_pool_.snapshot_segments();
 
     // Only Sealed and Active slots contain data.
     const auto [first, last] = std::ranges::remove_if(snapshots, [](const auto& snap) -> auto {
-        return snap.state != ring::WalSlotState::Sealed && snap.state != ring::WalSlotState::Active;
+        return snap.state != pool::SegmentState::Sealed && snap.state != pool::SegmentState::Active;
     });
     snapshots.erase(first, last);
 
@@ -88,7 +89,7 @@ auto WalReader::recover(RecordCallback callback) noexcept -> RecoveryResult {
             result.status = status;
             result.last_valid_lsn = prev_lsn;
 
-            result.torn_slot_index = snap.ring_index;
+            result.torn_slot_index = snap.pool_index;
             result.torn_slot_valid_end = valid_end;
 
             return result; // stop recovery on first sign of trouble
@@ -100,7 +101,7 @@ auto WalReader::recover(RecordCallback callback) noexcept -> RecoveryResult {
     return result;
 }
 
-auto WalReader::recover_slot(const ring::WalRing::SlotSnapshot& snap,
+auto WalReader::recover_slot(const pool::WalSegmentPool::SegmentSnapshot& snap,
                              RecordCallback& cb,
                              std::uint64_t& prev_lsn,
                              std::uint64_t& records_out) noexcept -> std::pair<RecoveryStatus, std::uint64_t> {
@@ -108,7 +109,7 @@ auto WalReader::recover_slot(const ring::WalRing::SlotSnapshot& snap,
     // 4096) satisfy kernel alignment requirements on both ext4 and XFS.
     // open_direct uses O_RDWR; semantically we only read, but WAL files are
     // always writable by the process that owns them.
-    auto fd_result = utils::os::open_direct(snap.path);
+    auto fd_result = utils::os::open_direct(wal_segment_pool_.format_path(snap.sequence));
     if (!fd_result) {
         return {RecoveryStatus::IOError, snap.write_offset};
     }
