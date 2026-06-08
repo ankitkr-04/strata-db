@@ -109,7 +109,7 @@ add_library(stratadb STATIC
   src/memory/virtual_region.cpp
   src/platform/identity.cpp
   src/platform/hardware_probe.cpp
-  src/wal/ring/ring.cpp
+  src/wal/pool/segment_pool.cpp
   src/wal/reader/reader.cpp
 )
 
@@ -194,5 +194,5 @@ if(STRATADB_BUILD_BENCHMARKS)
   add_stratadb_benchmark(tlab_bench benchmarks/tlab_bench.cpp)
   add_stratadb_benchmark(page_bench benchmarks/page_bench.cpp)
   add_stratadb_benchmark(memtable_bench benchmarks/memtable_bench.cpp)
-  add_stratadb_benchmark(wal_ring_bench benchmarks/wal_ring_bench.cpp)
+  add_stratadb_benchmark(wal_ring_bench benchmarks/wal_pool_bench.cpp)
 endif()

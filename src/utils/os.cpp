@@ -370,5 +370,30 @@ auto write_exact(int fd, const void* buf, std::size_t size, std::uint64_t offset
 
     return {};
 }
+auto sync_dir_entries(int fd) noexcept -> bool {
+    if (fd < 0) {
+        return false;
+    }
+
+#if defined(__linux__) || defined(__APPLE__)
+    return ::fsync(fd) == 0;
+#else
+    return false;
+#endif
+}
+
+auto open_directory(const std::filesystem::path& path) noexcept -> std::expected<int, io::IOError> {
+#if defined(__linux__) || defined(__APPLE__)
+    // O_DIRECTORY ensures we only open if it is a directory.
+    // O_RDONLY is sufficient to allow fsync on the FD.
+    int fd = ::open(path.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (fd < 0) {
+        return std::unexpected(detail::map_errno(errno));
+    }
+    return fd;
+#else
+    return std::unexpected(io::IOError::UnknownError);
+#endif
+}
 
 } // namespace stratadb::utils::os
