@@ -2,6 +2,7 @@
 
 #include "stratadb/config/config_manager.hpp"
 #include "stratadb/config/immutable/wal_config.hpp"
+#include "stratadb/memory/epoch_manager.hpp"
 #include "stratadb/utils/os.hpp"
 #include "stratadb/wal/pool/segment_pool.hpp"
 #include "stratadb/wal/reader/validator.hpp"
@@ -45,11 +46,13 @@ auto WalManager::make_pipeline(const platform::HardwareInfo::Io& io_info,
 WalManager::WalManager(const config::WalConfig& wal_cfg,
                        const config::BlockPoolConfig& pool_cfg,
                        const config::ConfigManager& config_mgr,
+                       memory::EpochManager& epoch_mgr,
                        std::filesystem::path wal_dir,
                        const platform::HardwareInfo& hw_info,
                        const platform::DbIdentity& db_identity)
     : wal_config_(wal_cfg)
     , config_mgr_(config_mgr)
+    , epoch_mgr_(epoch_mgr)
     , hw_info_(hw_info)
     , engine_(hw_info_.io)
     , pool_(pool_cfg)
@@ -97,14 +100,21 @@ void WalManager::flush() noexcept {
 }
 
 void WalManager::flusher_loop() {
+    // Register this thread with the epoch manager.  ConfigManager::get_mutable()
+    // checks EpochManager::is_registered() and terminates if the thread is not
+    // registered — this was the missing piece that caused silent std::terminate.
+    memory::EpochManager::ThreadRegistrationGuard epoch_guard(epoch_mgr_);
+
     if (wal_config_.spsc.mode == config::SpscMode::ManualOverride) {
         const auto core_id = wal_config_.spsc.core_id.value();
         if (core_id < hw_info_.cpu.logical_count) {
             if (!utils::os::pin_current_thread_to_core(core_id)) {
+                // TODO::Handle error
             }
         }
         if (wal_config_.spsc.request_realtime_priority) {
             if (!utils::os::elevate_to_realtime_priority()) {
+                // TODO::Handle error
             }
         }
     }
@@ -157,13 +167,11 @@ void WalManager::flusher_loop() {
 
                         if (result.has_value()) {
                             wal_segment_pool_->advance_write_offset(iov.iov_len);
-
                             wal_segment_pool_->record_block_lsn(node->max_lsn);
 
                             if (wal_segment_pool_->active_fill_ratio() >= trigger_ratio) {
                                 wal_segment_pool_->notify_precreate();
                             }
-                        } else {
                         }
                     }
 
@@ -176,6 +184,7 @@ void WalManager::flusher_loop() {
                 if (performed_work) {
                     if (should_sync) {
                         if (!engine_.sync(wal_segment_pool_->active_fd())) {
+                            // TODO: Handle sync error
                         }
                     }
 

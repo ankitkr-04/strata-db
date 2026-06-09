@@ -4,6 +4,7 @@
 #include "stratadb/config/immutable/wal_config.hpp"
 #include "stratadb/io/posix_io_engine.hpp"
 #include "stratadb/memory/block_pool.hpp"
+#include "stratadb/memory/epoch_manager.hpp"
 #include "stratadb/platform/hardware_model.hpp"
 #include "stratadb/platform/identity.hpp"
 #include "stratadb/utils/cache.hpp"
@@ -13,11 +14,9 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
-#include <span>
 #include <string>
 #include <thread>
 #include <utility>
-#include <variant>
 #include <vector>
 
 namespace stratadb::config {
@@ -34,9 +33,13 @@ using WriteBatch = std::vector<std::pair<std::string, std::string>>;
 
 class WalManager {
   public:
+    // epoch_mgr must outlive WalManager.  The flusher thread registers with it
+    // so that ConfigManager::get_mutable() (which requires epoch registration)
+    // is safe to call from the flusher.
     WalManager(const config::WalConfig& wal_cfg,
                const config::BlockPoolConfig& pool_cfg,
                const config::ConfigManager& config_mgr,
+               memory::EpochManager& epoch_mgr,
                std::filesystem::path wal_dir,
                const platform::HardwareInfo& hw_info,
                const platform::DbIdentity& db_identity);
@@ -63,6 +66,7 @@ class WalManager {
   private:
     config::WalConfig wal_config_;
     const config::ConfigManager& config_mgr_;
+    memory::EpochManager& epoch_mgr_; // for flusher thread registration
 
     platform::HardwareInfo hw_info_;
     io::PosixIoEngine engine_;
