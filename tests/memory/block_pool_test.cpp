@@ -24,6 +24,8 @@ struct BlockPoolTestPeer {
 
 class BlockPoolTest : public ::testing::Test {
   protected:
+    BlockPoolTest()
+        : pool_(config::BlockPoolConfig{}) {}
     BlockPool pool_;
 };
 
