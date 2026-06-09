@@ -1,6 +1,6 @@
 #include "stratadb/memory/arena.hpp"
 #include "stratadb/memory/tlab.hpp"
-#include "stratadb/utils/hardware.hpp"
+#include "stratadb/utils/probe.hpp"
 
 #include <gtest/gtest.h>
 #include <random>
@@ -9,6 +9,7 @@
 using namespace stratadb::memory;
 using namespace stratadb::config;
 
+const std::uint8_t AUTODETECT = 0; // Sentinel for auto-detect alignment
 // helper
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
 static auto make_config(std::size_t total, std::size_t tlab) {
@@ -101,7 +102,7 @@ TEST(TLAB, RefillsForSmallAllocationWhenTinySlackRemains) {
 // ---------- EXACT BOUNDARY ----------
 
 TEST(TLAB, ExactBoundary) {
-    auto arena = Arena::create(make_config(8192, MemoryConfig::ALIGNMENT_AUTODETECT)).value();
+    auto arena = Arena::create(make_config(8192, AUTODETECT)).value();
     TLAB tlab(arena);
 
     auto p1 = tlab.allocate(2048);
@@ -130,7 +131,7 @@ TEST(TLAB, LargeAllocation) {
 // ---------- OOM ----------
 
 TEST(TLAB, OutOfMemory) {
-    auto arena = Arena::create(make_config(8192, MemoryConfig::ALIGNMENT_AUTODETECT)).value();
+    auto arena = Arena::create(make_config(8192, AUTODETECT)).value();
     TLAB tlab(arena);
 
     while (true) {

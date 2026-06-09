@@ -30,10 +30,10 @@ class BlockPoolTest : public ::testing::Test {
 // 1. Max Capacity Exhaustion & Thread Staging
 TEST_F(BlockPoolTest, MaxCapacityExhaustionAndThreadStaging) {
     std::vector<std::span<std::byte>> acquired_blocks;
-    acquired_blocks.reserve(BlockPool::CAPACITY);
+    acquired_blocks.reserve(BlockPool::MAX_CAPACITY);
 
     // Completely deplete the pool
-    for (size_t i = 0; i < BlockPool::CAPACITY; ++i) {
+    for (size_t i = 0; i < BlockPool::MAX_CAPACITY; ++i) {
         acquired_blocks.push_back(pool_.acquire_block());
     }
 
@@ -72,7 +72,7 @@ TEST_F(BlockPoolTest, MaxCapacityExhaustionAndThreadStaging) {
 TEST_F(BlockPoolTest, RingBufferIndexMaskingWrapAround) {
     constexpr size_t ITERATIONS = 1'000'000;
 
-    // Perform massive interleaved acquire and release sequences crossing CAPACITY threshold multiple times
+    // Perform massive interleaved acquire and release sequences crossing MAX_CAPACITY threshold multiple times
     for (size_t i = 0; i < ITERATIONS; ++i) {
         auto block = pool_.acquire_block();
         ASSERT_NE(block.data(), nullptr);
@@ -84,10 +84,10 @@ TEST_F(BlockPoolTest, RingBufferIndexMaskingWrapAround) {
 // 3. Futex Spurious Wakeup Resiliency
 TEST_F(BlockPoolTest, FutexSpuriousWakeupResiliency) {
     std::vector<std::span<std::byte>> acquired_blocks;
-    acquired_blocks.reserve(BlockPool::CAPACITY);
+    acquired_blocks.reserve(BlockPool::MAX_CAPACITY);
 
     // Saturated to complete exhaustion (head_ == tail_)
-    for (size_t i = 0; i < BlockPool::CAPACITY; ++i) {
+    for (size_t i = 0; i < BlockPool::MAX_CAPACITY; ++i) {
         acquired_blocks.push_back(pool_.acquire_block());
     }
 
@@ -122,8 +122,8 @@ TEST_F(BlockPoolTest, FutexSpuriousWakeupResiliency) {
 TEST_F(BlockPoolTest, PointerToIDMappingBoundaryVerification) {
     // Acquire all blocks sequentially to find absolute bounds
     std::vector<std::span<std::byte>> blocks;
-    blocks.reserve(BlockPool::CAPACITY);
-    for (size_t i = 0; i < BlockPool::CAPACITY; ++i) {
+    blocks.reserve(BlockPool::MAX_CAPACITY);
+    for (size_t i = 0; i < BlockPool::MAX_CAPACITY; ++i) {
         blocks.push_back(pool_.acquire_block());
     }
 

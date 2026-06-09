@@ -24,8 +24,8 @@
 //     ├─ Concurrent put + scan: scan never crashes (no torn reads)
 //     └─ Sequence monotonicity: concurrent puts → seqs never aliased
 
-#include "stratadb/config/memory_config.hpp"
-#include "stratadb/config/memtable_config.hpp"
+#include "stratadb/config/immutable/memory_config.hpp"
+#include "stratadb/config/mutable/memtable_config.hpp"
 #include "stratadb/memory/arena.hpp"
 #include "stratadb/memory/tlab.hpp"
 #include "stratadb/memtable/memtable_result.hpp"
@@ -82,9 +82,7 @@ namespace {
 
 } // namespace
 
-// ═══════════════════════════════════════════════════════════════════
 // Correctness
-// ═══════════════════════════════════════════════════════════════════
 
 // Scan must expose tombstone nodes; only get() hides them.
 TEST(SkipListEdge, ScanExposesTombstones) {
@@ -263,9 +261,7 @@ TEST(SkipListEdge, GetOnNeverInsertedKey) {
     EXPECT_FALSE(mt.get("zzz").has_value());
 }
 
-// ═══════════════════════════════════════════════════════════════════
 // Memory / Resource Edge Cases
-// ═══════════════════════════════════════════════════════════════════
 
 // When the arena is exhausted, put() must return OutOfMemory without
 // crashing, corrupting internal state, or leaving a partial node.
@@ -344,9 +340,7 @@ TEST(SkipListEdge, TlabDetachPreventsAllocation) {
     EXPECT_TRUE(mt.get("before").has_value());
 }
 
-// ═══════════════════════════════════════════════════════════════════
 // Concurrency (should be TSAN-clean)
-// ═══════════════════════════════════════════════════════════════════
 
 // 16 threads each insert 512 unique keys.  After all threads join, every
 // key must be retrievable via get().
@@ -405,7 +399,9 @@ TEST(SkipListEdge, ConcurrentPutAndScanNoCrash) {
     std::thread scanner([&] -> void {
         while (!done_writing.load(std::memory_order_acquire)) {
             std::atomic_size_t count{0};
-            mt.scan([&count](const SkipListMemTable::EntryView&) -> void { count.fetch_add(1, std::memory_order_relaxed); });
+            mt.scan([&count](const SkipListMemTable::EntryView&) -> void {
+                count.fetch_add(1, std::memory_order_relaxed);
+            });
             (void)count; // prevent dead-store elimination
         }
         // Final scan after writing is done.
@@ -457,9 +453,7 @@ TEST(SkipListEdge, ConcurrentSameKeyspaceNoCrash) {
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════
 // SkipListNode Static Guarantees (belt-and-suspenders header checks)
-// ═══════════════════════════════════════════════════════════════════
 
 TEST(SkipListNodeEdge, MaxSequenceFitsInTrailerBits) {
     // Trailer = (sequence << TYPE_BITS) | type_byte.  The top bit of a

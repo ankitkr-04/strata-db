@@ -1,4 +1,5 @@
-#include "stratadb/wal/wal_manager.hpp"
+#include "stratadb/io/unique_file_descriptor.hpp"
+#include "stratadb/wal/manager.hpp"
 
 #include <atomic>
 #include <cstdlib>
