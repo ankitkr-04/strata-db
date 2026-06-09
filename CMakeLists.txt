@@ -146,6 +146,8 @@ add_executable(stratadb_tests
   tests/memory/block_pool_test.cpp
   tests/wal/wal_manager_core_test.cpp
   tests/wal/wal_manager_config_test.cpp
+  tests/wal/wal_segment_pool_test.cpp
+  tests/wal/wal_reader_test.cpp
 )
 
 target_link_libraries(stratadb_tests PRIVATE stratadb stratadb_warnings GTest::gtest_main)
