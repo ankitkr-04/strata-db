@@ -1,3 +1,4 @@
+#include "../helper/test_config_helper.hpp"
 #include "stratadb/memory/arena.hpp"
 #include "stratadb/memory/tlab.hpp"
 #include "stratadb/utils/probe.hpp"
@@ -11,20 +12,9 @@ using namespace stratadb::config;
 
 const std::size_t AUTODETECT = 0;
 
-static auto make_config(std::size_t total, std::size_t tlab) {
-    MemoryConfig cfg;
-    cfg.total_budget_bytes = total;
-
-    cfg.tlab_size_bytes = (tlab == AUTODETECT) ? 4096 : tlab;
-
-    cfg.block_alignment_bytes = 4096;
-    cfg.large_alloc_tlab_fraction = 8;
-
-    return cfg;
-}
-
 TEST(TLAB, BasicAllocation) {
-    auto arena = Arena::create(make_config(10ULL * 1024 * 1024, 2ULL * 1024 * 1024)).value();
+    auto arena =
+        Arena::create(stratadb::helper::make_test_memory_config(10ULL * 1024 * 1024, 2ULL * 1024 * 1024)).value();
     TLAB tlab(arena);
 
     auto ptr = tlab.allocate(64);
@@ -33,7 +23,8 @@ TEST(TLAB, BasicAllocation) {
 }
 
 TEST(TLAB, Alignment) {
-    auto arena = Arena::create(make_config(10ULL * 1024 * 1024, 2ULL * 1024 * 1024)).value();
+    auto arena =
+        Arena::create(stratadb::helper::make_test_memory_config(10ULL * 1024 * 1024, 2ULL * 1024 * 1024)).value();
     TLAB tlab(arena);
 
     void* ptr = tlab.allocate(15, 64);
@@ -43,7 +34,8 @@ TEST(TLAB, Alignment) {
 }
 
 TEST(TLAB, SequentialAllocation) {
-    auto arena = Arena::create(make_config(10ULL * 1024 * 1024, 2ULL * 1024 * 1024)).value();
+    auto arena =
+        Arena::create(stratadb::helper::make_test_memory_config(10ULL * 1024 * 1024, 2ULL * 1024 * 1024)).value();
     TLAB tlab(arena);
 
     std::vector<std::uintptr_t> ptrs;
@@ -60,7 +52,7 @@ TEST(TLAB, SequentialAllocation) {
 }
 
 TEST(TLAB, RefillTrigger) {
-    auto arena = Arena::create(make_config(16ULL * 1024, 4ULL * 1024)).value();
+    auto arena = Arena::create(stratadb::helper::make_test_memory_config(16ULL * 1024, 4ULL * 1024)).value();
     TLAB tlab(arena);
 
     std::vector<void*> ptrs;
@@ -77,7 +69,7 @@ TEST(TLAB, RefillTrigger) {
 }
 
 TEST(TLAB, RefillsForSmallAllocationWhenTinySlackRemains) {
-    auto arena = Arena::create(make_config(16ULL * 1024, 4ULL * 1024)).value();
+    auto arena = Arena::create(stratadb::helper::make_test_memory_config(16ULL * 1024, 4ULL * 1024)).value();
     TLAB tlab(arena);
 
     const std::size_t expected_alignment = 4096;
@@ -96,7 +88,7 @@ TEST(TLAB, RefillsForSmallAllocationWhenTinySlackRemains) {
 }
 
 TEST(TLAB, ExactBoundary) {
-    auto arena = Arena::create(make_config(8192, AUTODETECT)).value();
+    auto arena = Arena::create(stratadb::helper::make_test_memory_config(8192, AUTODETECT)).value();
     TLAB tlab(arena);
 
     auto p1 = tlab.allocate(2048);
@@ -111,7 +103,8 @@ TEST(TLAB, ExactBoundary) {
 }
 
 TEST(TLAB, LargeAllocation) {
-    auto arena = Arena::create(make_config(16ULL * 1024 * 1024, 2ULL * 1024 * 1024)).value();
+    auto arena =
+        Arena::create(stratadb::helper::make_test_memory_config(16ULL * 1024 * 1024, 2ULL * 1024 * 1024)).value();
     TLAB tlab(arena);
 
     auto p = tlab.allocate(5ULL * 1024 * 1024);
@@ -120,7 +113,7 @@ TEST(TLAB, LargeAllocation) {
 }
 
 TEST(TLAB, OutOfMemory) {
-    auto arena = Arena::create(make_config(8192, AUTODETECT)).value();
+    auto arena = Arena::create(stratadb::helper::make_test_memory_config(8192, AUTODETECT)).value();
     TLAB tlab(arena);
 
     while (true) {
@@ -133,7 +126,8 @@ TEST(TLAB, OutOfMemory) {
 }
 
 TEST(TLAB, RandomStress) {
-    auto arena = Arena::create(make_config(32ULL * 1024 * 1024, 2ULL * 1024 * 1024)).value();
+    auto arena =
+        Arena::create(stratadb::helper::make_test_memory_config(32ULL * 1024 * 1024, 2ULL * 1024 * 1024)).value();
     TLAB tlab(arena);
 
     std::mt19937 rng(42);
@@ -149,7 +143,8 @@ TEST(TLAB, RandomStress) {
 }
 
 TEST(TLAB, AlignmentTorture) {
-    auto arena = Arena::create(make_config(32ULL * 1024 * 1024, 2ULL * 1024 * 1024)).value();
+    auto arena =
+        Arena::create(stratadb::helper::make_test_memory_config(32ULL * 1024 * 1024, 2ULL * 1024 * 1024)).value();
     TLAB tlab(arena);
 
     std::vector<std::size_t> aligns = {8, 16, 32, 64, 128, 256};

@@ -1,4 +1,5 @@
 
+#include "../helper/test_config_helper.hpp"
 #include "stratadb/memory/arena.hpp"
 #include "stratadb/memory/tlab.hpp"
 #include "stratadb/memtable/skiplist_memtable.hpp"
@@ -24,19 +25,11 @@ using namespace stratadb::config;
 
 namespace {
 
-constexpr std::size_t kArenaSize = 32ULL * 1024 * 1024;
-constexpr std::size_t kTlabSize = 2ULL * 1024 * 1024;
-
-[[nodiscard]] auto make_config(std::size_t total = kArenaSize) {
-    MemoryConfig cfg{};
-    cfg.total_budget_bytes = total;
-    cfg.tlab_size_bytes = kTlabSize;
-    cfg.page_strategy = PageStrategy::Standard4K;
-    return cfg;
-}
+// constexpr std::size_t kArenaSize = 32ULL * 1024 * 1024;
+// constexpr std::size_t kTlabSize = 2ULL * 1024 * 1024;
 
 [[nodiscard]] auto make_arena() {
-    return Arena::create(make_config()).value();
+    return Arena::create(stratadb::helper::make_test_memory_config()).value();
 }
 
 [[nodiscard]] auto make_tlab(Arena& arena) -> TLAB {

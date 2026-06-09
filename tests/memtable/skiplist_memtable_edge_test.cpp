@@ -1,29 +1,5 @@
-// tests/memtable/skiplist_memtable_edge_test.cpp
-//
-// Edge-case and stress coverage for SkipListMemTable.
-// Complements skiplist_memtable_test.cpp which covers happy-path behaviour.
-//
-// New cases:
-//   Correctness
-//     ├─ Scan includes tombstones (get() hides them, scan() does not)
-//     ├─ Resurrection: remove → put returns value, not nullopt
-//     ├─ Key collisions across threads observed by get() after join
-//     ├─ Sequence numbers are strictly monotonically increasing
-//     ├─ Scan emits newest version first for duplicate user keys
-//     ├─ Empty-value round-trip (zero-length value)
-//     ├─ Single-byte key and value
-//     └─ Large batch: 4096 unique keys, full scan matches put order
-//
-//   Memory / Resource
-//     ├─ OOM path: Arena exhausted → OutOfMemory result, no crash
-//     ├─ Arena reset with fresh memtable after OOM
-//     └─ TLAB detach: allocations return nullptr gracefully after detach
-//
-//   Concurrency (TSAN clean)
-//     ├─ 16 threads × 512 unique keys: all visible after join
-//     ├─ Concurrent put + scan: scan never crashes (no torn reads)
-//     └─ Sequence monotonicity: concurrent puts → seqs never aliased
 
+#include "../helper/test_config_helper.hpp"
 #include "stratadb/config/immutable/memory_config.hpp"
 #include "stratadb/config/mutable/memtable_config.hpp"
 #include "stratadb/memory/arena.hpp"
@@ -53,23 +29,6 @@ using namespace stratadb::config;
 
 namespace {
 
-// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
-[[nodiscard]] auto make_mem_cfg(std::size_t total = 32ULL << 20, std::size_t tlab_sz = 2ULL << 20) -> MemoryConfig {
-    MemoryConfig c;
-    c.total_budget_bytes = total;
-    c.tlab_size_bytes = tlab_sz;
-    c.page_strategy = PageStrategy::Standard4K;
-    return c;
-}
-
-[[nodiscard]] auto make_mt_cfg(std::size_t max = std::numeric_limits<std::size_t>::max()) -> MemTableConfig {
-    MemTableConfig c;
-    c.max_size_bytes = max;
-    c.flush_trigger_bytes = max;
-    c.stall_trigger_bytes = max;
-    return c;
-}
-
 // Zero-padded decimal key, e.g. key_of(42, 8) → "00000042"
 [[nodiscard]] auto key_of(std::size_t n, std::size_t width = 16) -> std::string {
     std::string s(width, '0');
@@ -86,8 +45,8 @@ namespace {
 
 // Scan must expose tombstone nodes; only get() hides them.
 TEST(SkipListEdge, ScanExposesTombstones) {
-    auto arena = Arena::create(make_mem_cfg()).value();
-    auto mt = SkipListMemTable{arena, make_mt_cfg()};
+    auto arena = Arena::create(stratadb::helper::make_test_memory_config()).value();
+    auto mt = SkipListMemTable{arena, stratadb::helper::make_test_memtable_config()};
     TLAB tlab(arena);
 
     ASSERT_EQ(mt.put("alive", "v", tlab), PutResult::Ok);
@@ -115,8 +74,8 @@ TEST(SkipListEdge, ScanExposesTombstones) {
 
 // remove() → put() on the same key must make it visible again.
 TEST(SkipListEdge, Resurrection) {
-    auto arena = Arena::create(make_mem_cfg()).value();
-    auto mt = SkipListMemTable{arena, make_mt_cfg()};
+    auto arena = Arena::create(stratadb::helper::make_test_memory_config()).value();
+    auto mt = SkipListMemTable{arena, stratadb::helper::make_test_memtable_config()};
     TLAB tlab(arena);
 
     ASSERT_EQ(mt.put("k", "v1", tlab), PutResult::Ok);
@@ -131,8 +90,8 @@ TEST(SkipListEdge, Resurrection) {
 
 // Zero-length value must round-trip correctly.
 TEST(SkipListEdge, EmptyValueRoundTrip) {
-    auto arena = Arena::create(make_mem_cfg()).value();
-    auto mt = SkipListMemTable{arena, make_mt_cfg()};
+    auto arena = Arena::create(stratadb::helper::make_test_memory_config()).value();
+    auto mt = SkipListMemTable{arena, stratadb::helper::make_test_memtable_config()};
     TLAB tlab(arena);
 
     ASSERT_EQ(mt.put("k", "", tlab), PutResult::Ok);
@@ -143,8 +102,8 @@ TEST(SkipListEdge, EmptyValueRoundTrip) {
 
 // Single-byte key and single-byte value.
 TEST(SkipListEdge, SingleByteKeyAndValue) {
-    auto arena = Arena::create(make_mem_cfg()).value();
-    auto mt = SkipListMemTable{arena, make_mt_cfg()};
+    auto arena = Arena::create(stratadb::helper::make_test_memory_config()).value();
+    auto mt = SkipListMemTable{arena, stratadb::helper::make_test_memtable_config()};
     TLAB tlab(arena);
 
     ASSERT_EQ(mt.put("x", "y", tlab), PutResult::Ok);
@@ -160,8 +119,8 @@ TEST(SkipListEdge, SequenceNumbersAreUnique) {
     constexpr std::size_t kThreads = 8;
     constexpr std::size_t kPerThread = 512;
 
-    auto arena = Arena::create(make_mem_cfg(256ULL << 20)).value();
-    auto mt = SkipListMemTable{arena, make_mt_cfg()};
+    auto arena = Arena::create(stratadb::helper::make_test_memory_config(256ULL << 20)).value();
+    auto mt = SkipListMemTable{arena, stratadb::helper::make_test_memtable_config()};
 
     std::mutex mu;
     std::set<std::uint64_t> seqs;
@@ -195,8 +154,8 @@ TEST(SkipListEdge, SequenceNumbersAreUnique) {
 // After a concurrent insert workload, scan must emit duplicate user keys
 // in descending sequence order (newest first at level 0).
 TEST(SkipListEdge, ScanNewestVersionFirstForDuplicates) {
-    auto arena = Arena::create(make_mem_cfg()).value();
-    auto mt = SkipListMemTable{arena, make_mt_cfg()};
+    auto arena = Arena::create(stratadb::helper::make_test_memory_config()).value();
+    auto mt = SkipListMemTable{arena, stratadb::helper::make_test_memtable_config()};
     TLAB tlab(arena);
 
     // Insert three versions of "k".
@@ -228,8 +187,8 @@ TEST(SkipListEdge, ScanNewestVersionFirstForDuplicates) {
 TEST(SkipListEdge, LargeBatchScanIsSorted) {
     constexpr std::size_t N = 4096;
 
-    auto arena = Arena::create(make_mem_cfg(64ULL << 20)).value();
-    auto mt = SkipListMemTable{arena, make_mt_cfg()};
+    auto arena = Arena::create(stratadb::helper::make_test_memory_config(64ULL << 20)).value();
+    auto mt = SkipListMemTable{arena, stratadb::helper::make_test_memtable_config()};
     TLAB tlab(arena);
 
     // Insert in reverse order to stress the sorted-insertion path.
@@ -247,8 +206,8 @@ TEST(SkipListEdge, LargeBatchScanIsSorted) {
 
 // get() on a key that was never inserted must return nullopt (miss).
 TEST(SkipListEdge, GetOnNeverInsertedKey) {
-    auto arena = Arena::create(make_mem_cfg()).value();
-    auto mt = SkipListMemTable{arena, make_mt_cfg()};
+    auto arena = Arena::create(stratadb::helper::make_test_memory_config()).value();
+    auto mt = SkipListMemTable{arena, stratadb::helper::make_test_memtable_config()};
     TLAB tlab(arena);
 
     ASSERT_EQ(mt.put("a", "1", tlab), PutResult::Ok);
@@ -268,8 +227,8 @@ TEST(SkipListEdge, GetOnNeverInsertedKey) {
 TEST(SkipListEdge, OomReturnNotCrash) {
     // Tiny arena: just enough for the head node, nothing more.
     const std::size_t tiny = 4096;
-    auto arena = Arena::create(make_mem_cfg(tiny, 4096)).value();
-    auto mt = SkipListMemTable{arena, make_mt_cfg(tiny)};
+    auto arena = Arena::create(stratadb::helper::make_test_memory_config(tiny, 4096)).value();
+    auto mt = SkipListMemTable{arena, stratadb::helper::make_test_memtable_config(tiny)};
     TLAB tlab(arena);
 
     // Drive until OOM.
@@ -295,10 +254,10 @@ TEST(SkipListEdge, OomReturnNotCrash) {
 // must work as if fresh.  (Clients are responsible for not using the old
 // memtable after reset — this test only verifies the new-memtable path.)
 TEST(SkipListEdge, FreshMemtableAfterArenaReset) {
-    auto arena = Arena::create(make_mem_cfg()).value();
+    auto arena = Arena::create(stratadb::helper::make_test_memory_config()).value();
 
     {
-        SkipListMemTable mt1{arena, make_mt_cfg()};
+        SkipListMemTable mt1{arena, stratadb::helper::make_test_memtable_config()};
         TLAB tlab(arena);
         ASSERT_EQ(mt1.put("old_key", "old_val", tlab), PutResult::Ok);
         EXPECT_TRUE(mt1.get("old_key").has_value());
@@ -307,7 +266,7 @@ TEST(SkipListEdge, FreshMemtableAfterArenaReset) {
     arena.reset(); // rewind offset; old nodes are now garbage
 
     {
-        SkipListMemTable mt2{arena, make_mt_cfg()};
+        SkipListMemTable mt2{arena, stratadb::helper::make_test_memtable_config()};
         TLAB tlab(arena);
         ASSERT_EQ(mt2.put("new_key", "new_val", tlab), PutResult::Ok);
         auto got = mt2.get("new_key");
@@ -321,8 +280,8 @@ TEST(SkipListEdge, FreshMemtableAfterArenaReset) {
 // triggering undefined behaviour.  The memtable's insert_node path handles
 // nullptr TLAB allocation by returning false → OutOfMemory.
 TEST(SkipListEdge, TlabDetachPreventsAllocation) {
-    auto arena = Arena::create(make_mem_cfg()).value();
-    auto mt = SkipListMemTable{arena, make_mt_cfg()};
+    auto arena = Arena::create(stratadb::helper::make_test_memory_config()).value();
+    auto mt = SkipListMemTable{arena, stratadb::helper::make_test_memtable_config()};
     TLAB tlab(arena);
 
     // One successful insert before detach.
@@ -348,8 +307,8 @@ TEST(SkipListEdge, ConcurrentAllKeysVisible) {
     constexpr std::size_t kThreads = 16;
     constexpr std::size_t kPerThread = 512;
 
-    auto arena = Arena::create(make_mem_cfg(256ULL << 20)).value();
-    auto mt = SkipListMemTable{arena, make_mt_cfg()};
+    auto arena = Arena::create(stratadb::helper::make_test_memory_config(256ULL << 20)).value();
+    auto mt = SkipListMemTable{arena, stratadb::helper::make_test_memtable_config()};
 
     std::vector<std::thread> workers;
     workers.reserve(kThreads);
@@ -381,8 +340,8 @@ TEST(SkipListEdge, ConcurrentAllKeysVisible) {
 // (torn pointer reads, null-deref on a partially-initialised node, etc.).
 // We don't assert full coverage of newly-inserted keys — only safety.
 TEST(SkipListEdge, ConcurrentPutAndScanNoCrash) {
-    auto arena = Arena::create(make_mem_cfg(64ULL << 20)).value();
-    auto mt = SkipListMemTable{arena, make_mt_cfg()};
+    auto arena = Arena::create(stratadb::helper::make_test_memory_config(64ULL << 20)).value();
+    auto mt = SkipListMemTable{arena, stratadb::helper::make_test_memtable_config()};
 
     std::atomic<bool> done_writing{false};
 
@@ -423,8 +382,8 @@ TEST(SkipListEdge, ConcurrentSameKeyspaceNoCrash) {
     constexpr std::size_t kKeySpace = 256;
     constexpr std::size_t kOpsEach = 1024;
 
-    auto arena = Arena::create(make_mem_cfg(64ULL << 20)).value();
-    auto mt = SkipListMemTable{arena, make_mt_cfg()};
+    auto arena = Arena::create(stratadb::helper::make_test_memory_config(64ULL << 20)).value();
+    auto mt = SkipListMemTable{arena, stratadb::helper::make_test_memtable_config()};
 
     std::vector<std::thread> workers;
     workers.reserve(kThreads);
