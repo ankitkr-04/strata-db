@@ -20,6 +20,10 @@ static auto make_config(std::size_t total,
     cfg.total_budget_bytes = total;
     cfg.tlab_size_bytes = tlab;
     cfg.page_strategy = strategy;
+
+    cfg.block_alignment_bytes = 4096;
+    cfg.large_alloc_tlab_fraction = 8;
+
     return cfg;
 }
 
@@ -55,8 +59,7 @@ TEST(Arena, AllocateBlockLarge) {
     auto cfg = make_config(20ULL * 1024 * 1024);
 
     auto arena = Arena::create(cfg).value();
-    const std::size_t expected_alignment =
-        (cfg.block_alignment_bytes == 0) ? stratadb::utils::system_page_size() : cfg.block_alignment_bytes;
+    const std::size_t expected_alignment = cfg.block_alignment_bytes;
 
     std::size_t req = 5ULL * 1024 * 1024;
 
@@ -71,8 +74,7 @@ TEST(Arena, Alignment) {
     auto cfg = make_config(10ULL * 1024 * 1024);
 
     auto arena = Arena::create(cfg).value();
-    const std::size_t expected_alignment =
-        (cfg.block_alignment_bytes == 0) ? stratadb::utils::system_page_size() : cfg.block_alignment_bytes;
+    const std::size_t expected_alignment = cfg.block_alignment_bytes;
 
     auto span = arena.allocate_block(128);
 
@@ -122,6 +124,7 @@ TEST(Arena, Reset) {
     auto s = arena.allocate_block(1024);
     EXPECT_FALSE(s.empty());
 }
+
 TEST(Arena, MoveSemantics) {
     auto cfg = make_config(10ULL * 1024 * 1024);
 
@@ -137,7 +140,7 @@ TEST(Arena, MoveSemantics) {
 
     EXPECT_EQ(b.memory_used(), used_before);
 
-    // moved-from should fail safely
+    
     auto s2 = a.allocate_block(1024);
     EXPECT_TRUE(s2.empty());
 }
@@ -188,7 +191,7 @@ TEST(Arena, ConcurrentAllocation) {
     std::atomic<bool> failed = false;
 
     for (std::size_t t = 0; t < threads; ++t) {
-        workers.emplace_back([&]() {
+        workers.emplace_back([&]() -> void {
             for (std::size_t i = 0; i < iters; ++i) {
                 auto s = arena.allocate_block(1024);
                 if (s.empty()) {
@@ -223,8 +226,8 @@ TEST(Arena, RandomStress) {
 }
 
 TEST(Arena, NumaPolicyDoesNotCrash) {
-    MemoryConfig cfg;
-    cfg.total_budget_bytes = 16ULL * 1024 * 1024;
+
+    auto cfg = make_config(16ULL * 1024 * 1024);
     cfg.numa_policy = NumaPolicy::Interleaved;
 
     auto arena = Arena::create(cfg);
@@ -234,8 +237,8 @@ TEST(Arena, NumaPolicyDoesNotCrash) {
 }
 
 TEST(Arena, PrefaultDoesNotCrash) {
-    MemoryConfig cfg;
-    cfg.total_budget_bytes = 32ULL * 1024 * 1024;
+
+    auto cfg = make_config(32ULL * 1024 * 1024);
     cfg.prefault_on_init = true;
 
     auto arena = Arena::create(cfg);

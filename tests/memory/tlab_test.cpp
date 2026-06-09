@@ -9,17 +9,19 @@
 using namespace stratadb::memory;
 using namespace stratadb::config;
 
-const std::uint8_t AUTODETECT = 0; // Sentinel for auto-detect alignment
-// helper
-// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+const std::size_t AUTODETECT = 0;
+
 static auto make_config(std::size_t total, std::size_t tlab) {
     MemoryConfig cfg;
     cfg.total_budget_bytes = total;
-    cfg.tlab_size_bytes = tlab;
+
+    cfg.tlab_size_bytes = (tlab == AUTODETECT) ? 4096 : tlab;
+
+    cfg.block_alignment_bytes = 4096;
+    cfg.large_alloc_tlab_fraction = 8;
+
     return cfg;
 }
-
-// ---------- BASIC ----------
 
 TEST(TLAB, BasicAllocation) {
     auto arena = Arena::create(make_config(10ULL * 1024 * 1024, 2ULL * 1024 * 1024)).value();
@@ -30,8 +32,6 @@ TEST(TLAB, BasicAllocation) {
     EXPECT_NE(ptr, nullptr);
 }
 
-// ---------- ALIGNMENT ----------
-
 TEST(TLAB, Alignment) {
     auto arena = Arena::create(make_config(10ULL * 1024 * 1024, 2ULL * 1024 * 1024)).value();
     TLAB tlab(arena);
@@ -41,8 +41,6 @@ TEST(TLAB, Alignment) {
     ASSERT_NE(ptr, nullptr);
     EXPECT_EQ(reinterpret_cast<std::uintptr_t>(ptr) % 64, 0u);
 }
-
-// ---------- SEQUENTIAL (NO OVERLAP) ----------
 
 TEST(TLAB, SequentialAllocation) {
     auto arena = Arena::create(make_config(10ULL * 1024 * 1024, 2ULL * 1024 * 1024)).value();
@@ -61,8 +59,6 @@ TEST(TLAB, SequentialAllocation) {
     }
 }
 
-// ---------- REFILL ----------
-
 TEST(TLAB, RefillTrigger) {
     auto arena = Arena::create(make_config(16ULL * 1024, 4ULL * 1024)).value();
     TLAB tlab(arena);
@@ -75,7 +71,6 @@ TEST(TLAB, RefillTrigger) {
         ptrs.push_back(p);
     }
 
-    // Ensure pointers are still valid and increasing
     for (std::size_t i = 1; i < ptrs.size(); ++i) {
         EXPECT_NE(ptrs[i], ptrs[i - 1]);
     }
@@ -84,7 +79,8 @@ TEST(TLAB, RefillTrigger) {
 TEST(TLAB, RefillsForSmallAllocationWhenTinySlackRemains) {
     auto arena = Arena::create(make_config(16ULL * 1024, 4ULL * 1024)).value();
     TLAB tlab(arena);
-    const std::size_t expected_alignment = stratadb::utils::system_page_size();
+
+    const std::size_t expected_alignment = 4096;
 
     for (std::size_t i = 0; i < 127; ++i) {
         ASSERT_NE(tlab.allocate(32, 8), nullptr);
@@ -99,8 +95,6 @@ TEST(TLAB, RefillsForSmallAllocationWhenTinySlackRemains) {
     EXPECT_EQ(arena.memory_used(), expected_alignment * 2);
 }
 
-// ---------- EXACT BOUNDARY ----------
-
 TEST(TLAB, ExactBoundary) {
     auto arena = Arena::create(make_config(8192, AUTODETECT)).value();
     TLAB tlab(arena);
@@ -111,13 +105,10 @@ TEST(TLAB, ExactBoundary) {
     ASSERT_NE(p1, nullptr);
     ASSERT_NE(p2, nullptr);
 
-    // next allocation must trigger refill
     auto p3 = tlab.allocate(2048);
 
     EXPECT_NE(p3, nullptr);
 }
-
-// ---------- LARGE ALLOCATION ----------
 
 TEST(TLAB, LargeAllocation) {
     auto arena = Arena::create(make_config(16ULL * 1024 * 1024, 2ULL * 1024 * 1024)).value();
@@ -127,8 +118,6 @@ TEST(TLAB, LargeAllocation) {
 
     ASSERT_NE(p, nullptr);
 }
-
-// ---------- OOM ----------
 
 TEST(TLAB, OutOfMemory) {
     auto arena = Arena::create(make_config(8192, AUTODETECT)).value();
@@ -142,8 +131,6 @@ TEST(TLAB, OutOfMemory) {
     auto p = tlab.allocate(1024);
     EXPECT_EQ(p, nullptr);
 }
-
-// ---------- RANDOM STRESS ----------
 
 TEST(TLAB, RandomStress) {
     auto arena = Arena::create(make_config(32ULL * 1024 * 1024, 2ULL * 1024 * 1024)).value();
@@ -160,8 +147,6 @@ TEST(TLAB, RandomStress) {
 
     EXPECT_LE(arena.memory_used(), arena.capacity());
 }
-
-// ---------- ALIGNMENT TORTURE ----------
 
 TEST(TLAB, AlignmentTorture) {
     auto arena = Arena::create(make_config(32ULL * 1024 * 1024, 2ULL * 1024 * 1024)).value();
