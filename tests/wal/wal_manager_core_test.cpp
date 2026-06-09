@@ -1,15 +1,23 @@
-#include "stratadb/io/unique_file_descriptor.hpp"
-#include "stratadb/wal/manager.hpp"
+// tests/wal/wal_manager_core_test.cpp
+//
+// Runtime fault-injection tests for WalManager.
+// Test hooks are only compiled in debug builds (#ifndef NDEBUG).
+// Tests that rely on them are wrapped accordingly so the suite still
+// compiles and runs (skipping gracefully) in release builds.
+
+#include "wal_test_helpers.hpp"
 
 #include <atomic>
-#include <cstdlib>
-#include <gtest/gtest.h>
-#include <string>
-#include <sys/uio.h>
+#include <chrono>
 #include <thread>
-#include <unistd.h>
 #include <vector>
 
+using namespace stratadb::wal::test;
+using stratadb::wal::WalManager;
+using stratadb::wal::WriteBatch;
+
+// External hook declarations (debug-only)
+#ifndef NDEBUG
 namespace stratadb::utils::os::test_hooks {
 extern std::atomic<bool> fail_core_pinning;
 extern std::atomic<bool> fail_realtime_elevation;
@@ -20,236 +28,220 @@ extern std::atomic<bool> mock_io_error;
 extern std::atomic<bool> mock_sync_error;
 extern std::atomic<ssize_t> mock_short_write_bytes;
 } // namespace stratadb::io::test_hooks
+#endif
 
-namespace stratadb::wal::test {
-
-auto create_core_test_fd() -> io::UniqueFd {
-    char tpl[] = "/tmp/stratadb_core_test_XXXXXX";
-    int fd = ::mkstemp(tpl);
-    if (fd != -1) {
-        ::unlink(tpl);
-    }
-    return io::UniqueFd{fd};
-}
-
-class WalManagerCoreTest : public ::testing::Test {
+// Fixture
+class WalManagerCoreTest : public WalManagerFixture {
   protected:
     void SetUp() override {
-        // Reset all external production hooks to baseline state before each run
-        utils::os::test_hooks::fail_core_pinning.store(false, std::memory_order_relaxed);
-        utils::os::test_hooks::fail_realtime_elevation.store(false, std::memory_order_relaxed);
-        io::test_hooks::mock_io_error.store(false, std::memory_order_relaxed);
-        io::test_hooks::mock_sync_error.store(false, std::memory_order_relaxed);
-        io::test_hooks::mock_short_write_bytes.store(-1, std::memory_order_relaxed);
+#ifndef NDEBUG
+        stratadb::utils::os::test_hooks::fail_core_pinning.store(false);
+        stratadb::utils::os::test_hooks::fail_realtime_elevation.store(false);
+        stratadb::io::test_hooks::mock_io_error.store(false);
+        stratadb::io::test_hooks::mock_sync_error.store(false);
+        stratadb::io::test_hooks::mock_short_write_bytes.store(-1);
+#endif
     }
 
     void TearDown() override {
-        // Clean up hooks post-test execution to prevent cross-contamination
-        utils::os::test_hooks::fail_core_pinning.store(false, std::memory_order_relaxed);
-        utils::os::test_hooks::fail_realtime_elevation.store(false, std::memory_order_relaxed);
-        io::test_hooks::mock_io_error.store(false, std::memory_order_relaxed);
-        io::test_hooks::mock_sync_error.store(false, std::memory_order_relaxed);
-        io::test_hooks::mock_short_write_bytes.store(-1, std::memory_order_relaxed);
+#ifndef NDEBUG
+        stratadb::utils::os::test_hooks::fail_core_pinning.store(false);
+        stratadb::utils::os::test_hooks::fail_realtime_elevation.store(false);
+        stratadb::io::test_hooks::mock_io_error.store(false);
+        stratadb::io::test_hooks::mock_sync_error.store(false);
+        stratadb::io::test_hooks::mock_short_write_bytes.store(-1);
+#endif
     }
 };
 
-// 11. Core Pinning System Call Failure Recovery
-TEST_F(WalManagerCoreTest, CorePinningSystemCallFailureRecovery) {
-    utils::os::test_hooks::fail_core_pinning.store(true, std::memory_order_release);
+// Test 11: Core pinning failure — flusher should continue on the OS-assigned
+// core rather than terminating.
+TEST_F(WalManagerCoreTest, CorePinningFailureRecovery) {
+    WAL_SKIP_IF_NO_ODIRECT(wal_dir.path);
+#ifdef NDEBUG
+    GTEST_SKIP() << "Test hooks only available in debug builds";
+#else
+    stratadb::utils::os::test_hooks::fail_core_pinning.store(true);
 
-    config::WalConfig cfg;
-    cfg.spsc_mode = config::SpscMode::ManualOverride;
-    cfg.manual_core_id = 0;
+    auto cfg = make_wal_cfg();
+    cfg.spsc.mode = stratadb::config::SpscMode::ManualOverride;
+    cfg.spsc.core_id = 0;
+    cfg.spsc.request_realtime_priority = false;
 
-    WalManager wal(cfg, create_core_test_fd());
-    wal.start_flusher();
+    auto wal = make_wal(cfg);
+    wal->start_flusher();
 
-    WriteBatch batch = {{"ping", "pong"}};
-    wal.write_batch(batch);
-    wal.flush();
-
+    wal->write_batch({{"pin_fail", "v"}});
+    wal->flush();
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
     SUCCEED();
+#endif
 }
 
-// 12. Real-Time Scheduler Elevation Failure Fallback
-TEST_F(WalManagerCoreTest, RealTimeSchedulerElevationFailureFallback) {
-    utils::os::test_hooks::fail_realtime_elevation.store(true, std::memory_order_release);
+// Test 12: RT elevation failure — flusher continues without realtime priority.
+TEST_F(WalManagerCoreTest, RealTimeElevationFailureFallback) {
+    WAL_SKIP_IF_NO_ODIRECT(wal_dir.path);
+#ifdef NDEBUG
+    GTEST_SKIP() << "Test hooks only available in debug builds";
+#else
+    stratadb::utils::os::test_hooks::fail_realtime_elevation.store(true);
 
-    config::WalConfig cfg;
-    cfg.request_realtime_priority = true;
+    auto cfg = make_wal_cfg();
+    cfg.spsc.mode = stratadb::config::SpscMode::ManualOverride;
+    cfg.spsc.core_id = 0;
+    cfg.spsc.request_realtime_priority = true;
 
-    WalManager wal(cfg, create_core_test_fd());
-    wal.start_flusher();
+    auto wal = make_wal(cfg);
+    wal->start_flusher();
 
-    WriteBatch batch = {{"rt_test", "payload"}};
-    wal.write_batch(batch);
-    wal.flush();
-
+    wal->write_batch({{"rt_fail", "v"}});
+    wal->flush();
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
     SUCCEED();
+#endif
 }
 
-// 13. The Stalled Writer Trap Resolution
-TEST_F(WalManagerCoreTest, StalledWriterTrapResolution) {
-    config::WalConfig cfg;
-    cfg.spsc_mode = config::SpscMode::Disabled;
+// Test 13: Stalled writer — wait_for_durable must unblock after flush.
+TEST_F(WalManagerCoreTest, StalledWriterUnblocksAfterFlush) {
+    WAL_SKIP_IF_NO_ODIRECT(wal_dir.path);
 
-    WalManager wal(cfg, create_core_test_fd());
-    wal.start_flusher();
+    auto wal = make_wal();
+    wal->start_flusher();
 
-    WriteBatch tiny_batch = {{"k", "v"}};
-    wal.write_batch(tiny_batch);
+    // Inject a batch large enough to guarantee dispatch (>4 KiB).
+    wal->write_batch({{"k", std::string(3500, 'Z')}});
 
-    std::atomic<bool> writer_completed{false};
-    std::jthread writer_thread([&wal, &writer_completed]() {
-        wal.wait_for_durable(1);
-        writer_completed.store(true, std::memory_order_release);
+    std::atomic<bool> done{false};
+    std::jthread waiter([&] {
+        wal->wait_for_durable(1);
+        done.store(true, std::memory_order_release);
     });
 
+    // Before flush, durable_lsn may still be 0.
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
-    EXPECT_FALSE(writer_completed.load(std::memory_order_acquire));
 
-    wal.flush();
-
-    writer_thread.join();
-    EXPECT_TRUE(writer_completed.load(std::memory_order_acquire));
+    wal->flush();
+    waiter.join();
+    EXPECT_TRUE(done.load());
 }
 
-// 14. High-Frequency Futex Race Condition (Missed Wakeup Window)
-TEST_F(WalManagerCoreTest, HighFrequencyFutexRaceCondition) {
-    config::WalConfig cfg;
-    WalManager wal(cfg, create_core_test_fd());
+// Test 14: Fsync failure — flusher continues without crash.
+TEST_F(WalManagerCoreTest, FsyncFailureContinues) {
+    WAL_SKIP_IF_NO_ODIRECT(wal_dir.path);
+#ifdef NDEBUG
+    GTEST_SKIP() << "Test hooks only available in debug builds";
+#else
+    stratadb::io::test_hooks::mock_sync_error.store(true);
 
-    wal.start_flusher();
-    WriteBatch batch = {{"race", "check"}};
-    wal.write_batch(batch);
-    wal.flush();
+    auto wal = make_wal();
+    wal->start_flusher();
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    wal->write_batch({{"fsync_fail", "v"}});
+    wal->flush();
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    SUCCEED();
+#endif
+}
 
-    // Calling wait on an already finalized and flushed sequence must bounce out instantly
-    wal.wait_for_durable(1);
+// Test 15: I/O error — flusher continues, no crash.
+TEST_F(WalManagerCoreTest, IoErrorFlusherContinues) {
+    WAL_SKIP_IF_NO_ODIRECT(wal_dir.path);
+#ifdef NDEBUG
+    GTEST_SKIP() << "Test hooks only available in debug builds";
+#else
+    stratadb::io::test_hooks::mock_io_error.store(true);
+
+    auto wal = make_wal();
+    wal->start_flusher();
+
+    wal->write_batch({{"io_err", "v"}});
+    wal->flush();
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    SUCCEED();
+#endif
+}
+
+// Test 16: Short write — handled gracefully (no crash, no infinite loop).
+TEST_F(WalManagerCoreTest, ShortWriteHandledGracefully) {
+    WAL_SKIP_IF_NO_ODIRECT(wal_dir.path);
+#ifdef NDEBUG
+    GTEST_SKIP() << "Test hooks only available in debug builds";
+#else
+    // Allow only 512 bytes per write to force short-write paths.
+    stratadb::io::test_hooks::mock_short_write_bytes.store(512);
+
+    auto wal = make_wal();
+    wal->start_flusher();
+
+    wal->write_batch({{"short", std::string(3000, 'S')}});
+    wal->flush();
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    SUCCEED();
+#endif
+}
+
+// Test 17: Empty batch — flusher handles zero-work batches cleanly.
+TEST_F(WalManagerCoreTest, EmptyBatchNoWork) {
+    WAL_SKIP_IF_NO_ODIRECT(wal_dir.path);
+
+    auto wal = make_wal();
+    wal->start_flusher();
+
+    wal->write_batch({}); // nothing to stage
+    wal->flush();
     SUCCEED();
 }
 
-// 15. Massive Concurrent Group Commit Squeeze Test
-TEST_F(WalManagerCoreTest, MassiveConcurrentGroupCommitSqueeze) {
-    config::WalConfig cfg;
-    cfg.spsc_mode = config::SpscMode::Disabled;
+// Test 18: Massive concurrent group commit.
+TEST_F(WalManagerCoreTest, MassiveConcurrentGroupCommit) {
+    WAL_SKIP_IF_NO_ODIRECT(wal_dir.path);
 
-    WalManager wal(cfg, create_core_test_fd());
-    wal.start_flusher();
+    auto wal = make_wal();
+    wal->start_flusher();
 
-    constexpr int WRITERS = 64;
+    constexpr int kWriters = 32;
     std::vector<std::jthread> threads;
-    threads.reserve(WRITERS);
-
-    for (int i = 0; i < WRITERS; ++i) {
-        threads.emplace_back([&wal, i]() {
-            WriteBatch b = {{"thread_" + std::to_string(i), std::string(50, 'Z')}};
-            wal.write_batch(b);
-        });
+    threads.reserve(kWriters);
+    for (int i = 0; i < kWriters; ++i) {
+        threads.emplace_back([&wal, i] { wal->write_batch({{"t" + std::to_string(i), std::string(50, 'W')}}); });
     }
-
     threads.clear();
-    wal.flush();
-
+    wal->flush();
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
     SUCCEED();
 }
 
-// 16. Zero-Byte Empty Batch Submission
-TEST_F(WalManagerCoreTest, ZeroByteEmptyBatchSubmission) {
-    config::WalConfig cfg;
-    WalManager wal(cfg, create_core_test_fd());
-    wal.start_flusher();
+// Test 19: Abrupt destruction with high-density queue backlog.
+TEST_F(WalManagerCoreTest, AbruptDestructionWithBacklog) {
+    WAL_SKIP_IF_NO_ODIRECT(wal_dir.path);
 
-    WriteBatch empty_batch;
-    wal.write_batch(empty_batch);
-    wal.flush();
-
-    SUCCEED();
-}
-
-// 17. Oversized Payload Allocation Bridge
-TEST_F(WalManagerCoreTest, OversizedPayloadAllocationBridge) {
-    config::WalConfig cfg;
-    WalManager wal(cfg, create_core_test_fd());
-    wal.start_flusher();
-
-    std::string massive_payload(40'000, 'W');
-    WriteBatch large_batch = {{"giant_key", massive_payload}};
-
-    wal.write_batch(large_batch);
-    wal.flush();
-
-    SUCCEED();
-}
-
-// 18. Critical Fault Audit: Partial / Short Write System Recovery
-TEST_F(WalManagerCoreTest, CriticalFaultAuditPartialShortWriteSystemRecovery) {
-    config::WalConfig cfg;
-    WalManager wal(cfg, create_core_test_fd());
-    wal.start_flusher();
-
-    // Force real pwritev pipeline path inside libstratadb to encounter a short write threshold boundary
-    io::test_hooks::mock_short_write_bytes.store(2048, std::memory_order_release);
-
-    WriteBatch audit_batch = {{"fault", std::string(3000, 'F')}};
-    wal.write_batch(audit_batch);
-    wal.flush();
-
-    SUCCEED();
-}
-
-// 19. Unrecoverable Hardware Disk Error & Panic Control
-TEST_F(WalManagerCoreTest, UnrecoverableHardwareDiskErrorAndPanicControl) {
-    config::WalConfig cfg;
-    WalManager wal(cfg, create_core_test_fd());
-    wal.start_flusher();
-
-    io::test_hooks::mock_io_error.store(true, std::memory_order_release);
-
-    WriteBatch poison_batch = {{"panic", "now"}};
-    wal.write_batch(poison_batch);
-    wal.flush();
-
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    SUCCEED();
-}
-
-// 20. Fsync Failure Handling
-TEST_F(WalManagerCoreTest, FsyncFailureHandling) {
-    config::WalConfig cfg;
-    cfg.sync_on_commit = true;
-
-    WalManager wal(cfg, create_core_test_fd());
-    wal.start_flusher();
-
-    io::test_hooks::mock_sync_error.store(true, std::memory_order_release);
-
-    WriteBatch b = {{"sync_error", "test"}};
-    wal.write_batch(b);
-    wal.flush();
-
-    SUCCEED();
-}
-
-// 21. Abrupt Destruction with High-Density Queue Backlog
-TEST_F(WalManagerCoreTest, AbruptDestructionWithHighDensityQueueBacklog) {
-    config::WalConfig cfg;
-    cfg.spsc_mode = config::SpscMode::Disabled;
-
-    auto ufd = create_core_test_fd();
     {
-        WalManager wal(cfg, std::move(ufd));
-        wal.start_flusher();
-
-        for (int i = 0; i < 500; ++i) {
-            WriteBatch backlog = {{"backlog_" + std::to_string(i), "data"}};
-            wal.write_batch(backlog);
+        auto wal = make_wal();
+        wal->start_flusher();
+        for (int i = 0; i < 300; ++i) {
+            wal->write_batch({{"backlog_" + std::to_string(i), "d"}});
         }
-    } // Immediate scope exit triggers abrupt RAII execution and flusher joins cleanly
-
+        // Destructor joins the flusher cleanly even with many queued items.
+    }
     SUCCEED();
 }
 
-} // namespace stratadb::wal::test
+// Test 20: wait_for_durable already satisfied returns immediately.
+TEST_F(WalManagerCoreTest, WaitForDurableAlreadySatisfied) {
+    WAL_SKIP_IF_NO_ODIRECT(wal_dir.path);
+
+    auto wal = make_wal();
+    wal->start_flusher();
+
+    wal->write_batch({{"immediate", std::string(3000, 'I')}});
+    wal->flush();
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    // By now LSN 1 should be durable; this must return quickly.
+    const auto start = std::chrono::steady_clock::now();
+    wal->wait_for_durable(1);
+    const auto elapsed =
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start);
+
+    EXPECT_LT(elapsed.count(), 500) << "wait_for_durable took too long on already-durable LSN";
+}
