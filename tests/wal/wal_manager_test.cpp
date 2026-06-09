@@ -1,117 +1,165 @@
-#include "stratadb/wal/wal_manager.hpp"
+// tests/wal/wal_manager_test.cpp
+//
+// Functional tests for WalManager with the segment-pool architecture.
+// The old tests referenced a single-fd constructor that no longer exists.
+//
+// Coverage:
+//   BasicWriteAndFlush         — write a batch, flush, verify WAL files appear
+//   EmptyBatch                 — empty write_batch must not crash
+//   WaitForDurableSignals      — durability notification fires after flush
+//   ConcurrentWriters          — 8 threads × batches, clean shutdown
+//   MultipleSegments           — write enough data to trigger rotation
+//   CleanShutdownUnderLoad     — destroy with queued batches, no crash
 
-#include <cstdlib>
-#include <gtest/gtest.h>
+#include "wal_test_helpers.hpp"
+
+#include <atomic>
+#include <chrono>
+#include <filesystem>
 #include <string>
 #include <thread>
-#include <unistd.h>
 #include <vector>
 
-namespace stratadb::wal::test {
+using namespace stratadb::wal::test;
+using stratadb::wal::WalManager;
+using stratadb::wal::WriteBatch;
 
-auto create_temp_file() -> io::UniqueFd {
-    char tpl[] = "/tmp/stratadb_wal_test_XXXXXX";
-    int fd = mkstemp(tpl);
-    if (fd != -1) {
-        unlink(tpl); // Unlink so it cleans up when closed
+namespace {
+
+auto count_wal_files(const std::filesystem::path& dir) -> std::size_t {
+    std::size_t n = 0;
+    std::error_code ec;
+    for (auto& e : std::filesystem::directory_iterator(dir, ec)) {
+        if (e.path().extension() == ".log")
+            ++n;
     }
-    return io::UniqueFd{fd};
+    return n;
 }
 
-TEST(WalManagerTest, SpscDowngradeOnSmallSystemsOrInvalidCores) {
-    config::WalConfig cfg;
-    // 1. Invalid manual override
-    cfg.spsc_mode = config::SpscMode::ManualOverride;
-    cfg.manual_core_id = 999999;
+} // namespace
 
-    WalManager wal1(cfg, create_temp_file());
-    EXPECT_EQ(wal1.get_effective_config().spsc_mode, config::SpscMode::Disabled);
-    EXPECT_FALSE(wal1.get_effective_config().manual_core_id.has_value());
+// Tests
 
-    // NOTE: AutoDiscover might fail on i3 with 2 cores as logical_core_count <= 2
-    // If it fails, it also downgrades to Disabled.
+class WalManagerTest : public WalManagerFixture {};
+
+TEST_F(WalManagerTest, BasicWriteAndFlush) {
+    WAL_SKIP_IF_NO_ODIRECT(wal_dir.path);
+
+    auto wal = make_wal();
+    wal->start_flusher();
+
+    WriteBatch batch{{"hello", "world"}, {"key2", "value2"}};
+    wal->write_batch(batch);
+    wal->flush();
+
+    // Give the flusher a moment to drain.
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    EXPECT_GE(count_wal_files(wal_dir.path), 1u)
+        << "Expected at least one WAL segment to be created in " << wal_dir.path;
 }
 
-TEST(WalManagerTest, BasicWriteBatch) {
-    config::WalConfig cfg;
-    cfg.spsc_mode = config::SpscMode::Disabled;
-    cfg.sync_on_commit = true;
+TEST_F(WalManagerTest, EmptyBatch) {
+    WAL_SKIP_IF_NO_ODIRECT(wal_dir.path);
 
-    auto ufd = create_temp_file();
-    int fd = ufd.get();
-    WalManager wal(cfg, std::move(ufd));
+    auto wal = make_wal();
+    wal->start_flusher();
 
-    wal.start_flusher();
-
-    WriteBatch batch;
-    std::string large_value(3000, 'X');
-    batch.emplace_back("hello", large_value);
-    batch.emplace_back("key2", "value2");
-
-    wal.write_batch(batch);
-
-    wal.flush();
-
-    // Batch written. wait_for_durable on LSN 1.
-    // LSN calculation depends on total updates. Mpsc pipeline increments it.
-    // Since we forced an allocation and a dispatch (5000 bytes > 4096 bytes block size),
-    // at least LSN 1 will be durably synced.
-    wal.wait_for_durable(1);
-
-    off_t size = lseek(fd, 0, SEEK_END);
-    EXPECT_GT(size, 0); // Something must have been written
+    WriteBatch empty{};
+    wal->write_batch(empty); // must not crash or deadlock
+    wal->flush();
+    // Destructor joins the flusher cleanly.
 }
 
-TEST(WalManagerTest, EmptyBatch) {
-    config::WalConfig cfg;
-    cfg.spsc_mode = config::SpscMode::Disabled;
+TEST_F(WalManagerTest, WaitForDurableSignals) {
+    WAL_SKIP_IF_NO_ODIRECT(wal_dir.path);
 
-    auto ufd = create_temp_file();
-    WalManager wal(cfg, std::move(ufd));
-    wal.start_flusher();
+    auto wal = make_wal();
+    wal->start_flusher();
 
-    WriteBatch batch; // Empty
-    wal.write_batch(batch);
+    // Write a batch large enough that the flusher will dispatch it.
+    WriteBatch batch{{"k", std::string(3000, 'X')}};
+    wal->write_batch(batch);
+    wal->flush();
 
-    // Since nothing is written, wait_for_durable wouldn't know when to return if it expected LSN updates,
-    // so we just let the destructor naturally clean up the WAL, asserting it handles empty batches gracefully.
-    // The flusher should just shut down cleanly.
+    // wait_for_durable must return — it should not block forever once the
+    // flusher has processed at least one block (LSN 1).
+    std::atomic<bool> done{false};
+    std::thread waiter([&] {
+        wal->wait_for_durable(1);
+        done.store(true, std::memory_order_release);
+    });
+
+    waiter.join();
+    EXPECT_TRUE(done.load());
 }
 
-TEST(WalManagerTest, ConcurrentGroupCommit) {
-    config::WalConfig cfg;
-    cfg.spsc_mode = config::SpscMode::Disabled; // Force MPSC
+TEST_F(WalManagerTest, ConcurrentWriters) {
+    WAL_SKIP_IF_NO_ODIRECT(wal_dir.path);
 
-    auto ufd = create_temp_file();
-    int fd = ufd.get();
-    WalManager wal(cfg, std::move(ufd));
-    wal.start_flusher();
+    auto wal = make_wal();
+    wal->start_flusher();
 
-    constexpr int NUM_THREADS = 10;
-    std::vector<std::jthread> threads;
+    constexpr int kThreads = 8;
+    constexpr int kBatchesPerThread = 20;
 
-    // We'll write to the WAL from multiple threads concurrently.
-    threads.reserve(NUM_THREADS);
-    for (int i = 0; i < NUM_THREADS; ++i) {
-        threads.emplace_back([&wal, i]() -> void {
-            WriteBatch batch;
-            std::string large_value(3000, 'Y');
-            batch.emplace_back("thread" + std::to_string(i), large_value);
-            wal.write_batch(batch);
+    std::vector<std::jthread> writers;
+    writers.reserve(kThreads);
+    for (int t = 0; t < kThreads; ++t) {
+        writers.emplace_back([&wal, t] {
+            for (int i = 0; i < kBatchesPerThread; ++i) {
+                WriteBatch b{{"thread_" + std::to_string(t), "value_" + std::to_string(i)}};
+                wal->write_batch(b);
+            }
         });
     }
+    writers.clear(); // join all
 
-    threads.clear(); // Waits for all pushing threads to complete
+    wal->flush();
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-    wal.flush();
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-
-    // We expect some positive LSN. We can't know the exact LSN each thread got without
-    // WalManager returning it, so we simply verify that it stops cleanly.
-
-    // To ensure durablity, we just ensure file has size > 0
-    off_t size = lseek(fd, 0, SEEK_END);
-    EXPECT_GT(size, 0);
+    EXPECT_GE(count_wal_files(wal_dir.path), 1u);
 }
 
-} // namespace stratadb::wal::test
+TEST_F(WalManagerTest, MultipleSegmentRotation) {
+    WAL_SKIP_IF_NO_ODIRECT(wal_dir.path);
+
+    // Use a very small slot so rotation happens quickly.
+    auto cfg = make_wal_cfg();
+    // Minimum: WalSlotHeader(4096) + 1 block(4096) + WalSlotFooter(512) = 8704
+    // Use 16 KiB so ~2-3 blocks trigger rotation.
+    cfg.slot_size_bytes = 16LL * 1024;
+    cfg.preallocated_pool_size = 2;
+
+    auto wal = make_wal(cfg);
+    wal->start_flusher();
+
+    // Write many small batches — each forces at least one 4 KiB block into the
+    // pipeline.  With a 16 KiB slot we expect rotation after 2-3 writes.
+    for (int i = 0; i < 10; ++i) {
+        WriteBatch b{{"key_" + std::to_string(i), std::string(100, 'A')}};
+        wal->write_batch(b);
+    }
+    wal->flush();
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+    // With rotation we expect > 1 segment file on disk.
+    EXPECT_GE(count_wal_files(wal_dir.path), 2u) << "Expected rotation to produce multiple segment files";
+}
+
+TEST_F(WalManagerTest, CleanShutdownUnderLoad) {
+    WAL_SKIP_IF_NO_ODIRECT(wal_dir.path);
+
+    {
+        auto wal = make_wal();
+        wal->start_flusher();
+
+        // Queue a large backlog before letting the destructor run.
+        for (int i = 0; i < 200; ++i) {
+            WriteBatch b{{"backlog_" + std::to_string(i), "v"}};
+            wal->write_batch(b);
+        }
+        // WalManager destructor must join the flusher without deadlock.
+    }
+    SUCCEED();
+}
