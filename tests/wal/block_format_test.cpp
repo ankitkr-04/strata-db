@@ -1,4 +1,5 @@
 
+#include "../support/byte_helpers.hpp"
 #include "stratadb/wal/block/delta_block.hpp"
 #include "stratadb/wal/block/gamma_block.hpp"
 #include "stratadb/wal/reader/validator.hpp"
@@ -8,32 +9,14 @@
 #include <cstddef>
 #include <cstring>
 #include <gtest/gtest.h>
-#include <span>
 #include <string>
 #include <vector>
 
 using namespace stratadb::wal;
 using namespace stratadb::wal::reader;
-
-// Helpers
-namespace {
-
-template <std::size_t N>
-std::span<const std::byte> as_bytes(const char (&lit)[N]) {
-    return {reinterpret_cast<const std::byte*>(lit), N - 1};
-}
-
-std::span<const std::byte> sv_bytes(std::string_view sv) {
-    return {reinterpret_cast<const std::byte*>(sv.data()), sv.size()};
-}
-
-// Reinterpret the block's raw storage as a uint8_t* for the validator helpers.
-template <typename Block>
-const std::uint8_t* raw(const Block& b) {
-    return reinterpret_cast<const std::uint8_t*>(&b);
-}
-
-} // namespace
+using stratadb::test::as_bytes;
+using stratadb::test::raw;
+using stratadb::test::sv_bytes;
 
 // GammaBlock tests
 
@@ -119,7 +102,7 @@ TEST(GammaBlock, PartialFlushThenFinalize) {
     auto fin = block.finalize(5);
     EXPECT_FALSE(fin.memory_to_write.empty());
 
-    // finalize writes from offset 0 (header changed) — verify checksum.
+    // finalize writes from offset 0 because the header changed.
     std::uint32_t vde = 0;
     std::memcpy(&vde, raw(block) + 28, sizeof(vde));
     EXPECT_TRUE(validate_gamma_block(raw(block), 4096, vde).checksum_ok);
@@ -194,7 +177,7 @@ TEST(DeltaBlock, SectorCRCSlotNeverContainsPayload) {
     std::uint32_t stored_crc = 0;
     std::memcpy(&stored_crc, raw(block) + 4092, sizeof(stored_crc));
     const std::uint32_t computed = stratadb::utils::crc32c(raw(block), 4092);
-    EXPECT_EQ(stored_crc, computed) << "Sector 0 CRC mismatch — records may have spilled into CRC slot";
+    EXPECT_EQ(stored_crc, computed) << "Sector 0 CRC mismatch; records may have spilled into CRC slot";
 }
 
 TEST(DeltaBlock, EmptyBlockFinalizes) {

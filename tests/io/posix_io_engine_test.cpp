@@ -1,3 +1,4 @@
+#include "../support/wal_test_helpers.hpp"
 #include "stratadb/io/io_types.hpp"
 #include "stratadb/io/posix_io_engine.hpp"
 #include "stratadb/platform/hardware_model.hpp"
@@ -16,7 +17,6 @@
 using namespace stratadb::io;
 using namespace stratadb::platform;
 
-// Helpers
 namespace {
 
 struct TempFile {
@@ -41,23 +41,11 @@ struct TempFile {
     auto operator=(const TempFile&) -> TempFile& = delete;
 };
 
-HardwareInfo::Io make_io_info(bool direct = false) {
-    HardwareInfo::Io io{};
-    io.logical_sector_size = 512;
-    io.physical_sector_size = 4096;
-    io.atomic_write_unit_min = 512;
-    io.atomic_write_unit_max = 4096;
-    io.is_rotational = false;
-    io.supports_fua = false;
-    io.supports_rwf_atomic = false;
-    io.supports_fallocate = true;
-    (void)direct;
-    return io;
+[[nodiscard]] auto make_io_info() -> HardwareInfo::Io {
+    return stratadb::wal::test::make_test_hw_info().io;
 }
 
 } // namespace
-
-// Tests
 
 TEST(PosixIoEngine, BasicBufferedWrite) {
     TempFile f;
@@ -164,12 +152,12 @@ TEST(PosixIoEngine, AlignmentViolationOnDirectFd) {
     }
     int direct_fd = *direct_result;
 
-    auto info = make_io_info(true);
+    auto info = make_io_info();
     PosixIoEngine engine(info);
 
     // A deliberately non-aligned buffer (offset by 1 byte from alignment).
     alignas(4096) std::array<char, 8192> aligned_storage{};
-    char* misaligned = aligned_storage.data() + 1; // NOT sector-aligned
+    char* misaligned = aligned_storage.data() + 1;
 
     struct iovec iov{.iov_base = misaligned, .iov_len = 512};
 
@@ -177,8 +165,8 @@ TEST(PosixIoEngine, AlignmentViolationOnDirectFd) {
         GTEST_SKIP() << "Failed to create misaligned buffer; skipping test";
     }
 
-    // In release: pwritev with bad alignment returns EINVAL → AlignmentViolation.
-    // In debug: the assert fires before the syscall — that's fine for tests.
+    // Release builds report the syscall EINVAL as AlignmentViolation.
+    // Debug builds assert before the syscall.
 #ifdef NDEBUG
     auto result = engine.writev(direct_fd, std::span(&iov, 1), 0);
     EXPECT_FALSE(result.has_value());
@@ -186,7 +174,6 @@ TEST(PosixIoEngine, AlignmentViolationOnDirectFd) {
         EXPECT_EQ(result.error(), IOError::AlignmentViolation);
     }
 #else
-    // Debug builds assert inside writev — skip the actual call to avoid SIGABRT.
     GTEST_SKIP() << "Debug assert fires before syscall; skipping in debug mode";
 #endif
 
