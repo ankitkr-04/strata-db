@@ -142,6 +142,7 @@ add_executable(stratadb_tests
   tests/memory/arena_test.cpp
   tests/memory/tlab_test.cpp
   tests/memtable/skiplist_memtable_test.cpp
+  tests/memtable/skiplist_memtable_edge_test.cpp
   tests/wal/wal_manager_test.cpp
   tests/memory/block_pool_test.cpp
   tests/wal/wal_manager_core_test.cpp

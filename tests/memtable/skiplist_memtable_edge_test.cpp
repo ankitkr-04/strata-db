@@ -247,6 +247,10 @@ TEST(SkipListEdge, OomReturnNotCrash) {
     // Keys already inserted before OOM must still be readable.
     EXPECT_NO_FATAL_FAILURE({
         auto res = mt.get(key_of(0)); // may or may not be present — just must not crash
+
+        if (res.has_value()) {
+            EXPECT_EQ(*res, "v");
+        }
     });
 }
 
@@ -350,6 +354,7 @@ TEST(SkipListEdge, ConcurrentPutAndScanNoCrash) {
         TLAB tlab(arena);
         for (std::size_t i = 0; i < 2048; ++i) {
             auto res = mt.put(key_of(i), "v", tlab);
+            ASSERT_EQ(res, PutResult::Ok) << "Unexpected put() result during concurrent put+scan test";
         }
         done_writing.store(true, std::memory_order_release);
     });
@@ -395,6 +400,8 @@ TEST(SkipListEdge, ConcurrentSameKeyspaceNoCrash) {
                 const auto key = key_of(op % kKeySpace);
                 const auto val = "t" + std::to_string(t) + "_op" + std::to_string(op);
                 auto res = mt.put(key, val, tlab); // result ignored — stall/flush ok
+                EXPECT_TRUE(res == PutResult::Ok || res == PutResult::FlushNeeded || res == PutResult::StallNeeded)
+                    << "Unexpected put() result during concurrent same-keyspace test: " << static_cast<int>(res);
             }
         });
     }
