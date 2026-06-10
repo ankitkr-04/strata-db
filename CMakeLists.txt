@@ -148,6 +148,12 @@ add_executable(stratadb_tests
   tests/wal/wal_manager_config_test.cpp
   tests/wal/wal_segment_pool_test.cpp
   tests/wal/wal_reader_test.cpp
+  tests/wal/block_format_test.cpp
+  tests/wal/vyukov_mpsc_queue_test.cpp
+  tests/wal/spsc_mailbox_queue_test.cpp
+  tests/io/posix_io_engine_test.cpp
+  tests/memory/virtual_region_test.cpp
+  tests/platform/hardware_probe_test.cpp
 )
 
 target_link_libraries(stratadb_tests PRIVATE stratadb stratadb_warnings GTest::gtest_main)
