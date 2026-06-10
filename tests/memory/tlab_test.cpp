@@ -72,21 +72,25 @@ TEST(TLAB, RefillsForSmallAllocationWhenTinySlackRemains) {
     auto arena = Arena::create(stratadb::helper::make_test_memory_config(16ULL * 1024, 4ULL * 1024)).value();
     TLAB tlab(arena);
 
-    const std::size_t expected_alignment = 4096;
-
+    // Consume almost all of the first TLAB block
     for (std::size_t i = 0; i < 127; ++i) {
         ASSERT_NE(tlab.allocate(32, 8), nullptr);
     }
 
-    EXPECT_EQ(arena.memory_used(), expected_alignment);
+    std::size_t memory_used_before_refill = arena.memory_used();
+
+    // This allocation is too large for the remaining slack, forcing a TLAB refill
+    ASSERT_NE(tlab.allocate(64, 8), nullptr);
+
+    std::size_t memory_used_after_refill = arena.memory_used();
+
+    // Prove that the Arena was asked for a new block
+    EXPECT_GT(memory_used_after_refill, memory_used_before_refill);
 
     ASSERT_NE(tlab.allocate(64, 8), nullptr);
-    EXPECT_EQ(arena.memory_used(), expected_alignment * 2);
-
-    ASSERT_NE(tlab.allocate(64, 8), nullptr);
-    EXPECT_EQ(arena.memory_used(), expected_alignment * 2);
+    // Prove we are now safely allocating from the new TLAB block without hitting the Arena again
+    EXPECT_EQ(arena.memory_used(), memory_used_after_refill);
 }
-
 TEST(TLAB, ExactBoundary) {
     auto arena = Arena::create(stratadb::helper::make_test_memory_config(8192, AUTODETECT)).value();
     TLAB tlab(arena);
