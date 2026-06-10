@@ -33,9 +33,8 @@ TEST(HardwareProbe, TotalPhysicalMemorySane) {
     EXPECT_GT(mem, 0u) << "total_physical_memory_bytes() returned 0";
     EXPECT_GE(mem, 64u * 1024 * 1024) << "Less than 64 MiB? Unexpected.";
 #else
-    // Platform may not expose this — just ensure no crash.
-    (void)mem;
-    SUCCEED();
+        (void)mem;
+        SUCCEED();
 #endif
 }
 
@@ -65,10 +64,7 @@ TEST(HardwareProbe, SupportsFallocateOnLinux) {
 #endif
 }
 
-// utils/os.hpp — CPU isolation helpers
-
 TEST(HardwareProbe, AutoDiscoverIsolatedCoreDoesNotCrash) {
-    // May return nullopt on systems with no isolated CPUs — that's correct.
     auto result = utils::os::auto_discover_isolated_core();
     if (result.has_value()) {
         EXPECT_LT(*result, utils::logical_core_count()) << "Discovered core id must be < logical_core_count()";
@@ -85,7 +81,6 @@ TEST(HardwareProbe, IsCoreIsolatedOutOfBoundsReturnsFalse) {
 
 TEST(HardwareProbe, ProbeHardwareNonExistentPathUsesDefaults) {
     platform::HardwareOverrides overrides{};
-    // Non-existent directory — open() fails, fd=-1, all probes fall back.
     auto info = platform::probe_hardware("/nonexistent/stratadb_test_dir", overrides);
 
     EXPECT_GE(info.cpu.logical_count, 1u);
@@ -126,7 +121,6 @@ TEST(HardwareProbe, OverridesWinOverOsValues) {
 // on this machine and doesn't crash with weird outputs.
 
 TEST(HardwareProbe, IsolateCpuParserDoesNotCrashOnRealSystem) {
-    // Run auto_discover twice — must be idempotent and not crash.
     auto r1 = utils::os::auto_discover_isolated_core();
     auto r2 = utils::os::auto_discover_isolated_core();
 

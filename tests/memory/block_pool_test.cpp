@@ -23,27 +23,23 @@ struct BlockPoolTestPeer {
 
 class BlockPoolTest : public ::testing::Test {
   protected:
-    // FIX 1: Provide safe defaults to bypass the ConfigResolver gap
     BlockPoolTest()
         : pool_([] {
             config::BlockPoolConfig cfg;
-            cfg.capacity = 32768; // Must be a power of 2
+            cfg.capacity = 32768;
             cfg.block_size_bytes = 4096;
-            cfg.payload_alignment_bytes = 4096; // This fixes the TSAN crash
+            cfg.payload_alignment_bytes = 4096;
             return cfg;
         }()) {}
 
     BlockPool pool_;
 };
 
-// 1. Max Capacity Exhaustion & Thread Staging
 TEST_F(BlockPoolTest, MaxCapacityExhaustionAndThreadStaging) {
     std::vector<std::span<std::byte>> acquired_blocks;
 
-    // FIX 2: Use pool_.capacity() instead of MAX_CAPACITY to prevent deadlocks
     acquired_blocks.reserve(pool_.capacity());
 
-    // Completely deplete the pool
     for (size_t i = 0; i < pool_.capacity(); ++i) {
         acquired_blocks.push_back(pool_.acquire_block());
     }
@@ -52,38 +48,31 @@ TEST_F(BlockPoolTest, MaxCapacityExhaustionAndThreadStaging) {
     std::atomic<bool> thread_exited{false};
     std::span<std::byte> delayed_block;
 
-    // Spawn concurrent worker thread
     std::jthread worker([this, &thread_blocked, &thread_exited, &delayed_block]() {
         thread_blocked.store(true, std::memory_order_release);
-        // This call must block via tail_.wait() because pool is empty
         delayed_block = pool_.acquire_block();
         thread_exited.store(true, std::memory_order_release);
     });
 
-    // Allow time for the thread to transition to blocked status
     while (!thread_blocked.load(std::memory_order_acquire)) {
         std::this_thread::yield();
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
     EXPECT_FALSE(thread_exited.load(std::memory_order_acquire));
 
-    // Recycle a single valid block from the primary thread
     auto recycled_span = acquired_blocks.back();
     acquired_blocks.pop_back();
     pool_.release_block(recycled_span);
 
-    // Blocked thread must immediately wake up, safely claim the recycled block, and exit
     worker.join();
     EXPECT_TRUE(thread_exited.load(std::memory_order_acquire));
     EXPECT_EQ(delayed_block.data(), recycled_span.data());
     EXPECT_EQ(delayed_block.size(), recycled_span.size());
 }
 
-// 2. Ring-Buffer Index Masking Wrap-Around
 TEST_F(BlockPoolTest, RingBufferIndexMaskingWrapAround) {
     constexpr size_t ITERATIONS = 1'000'000;
 
-    // Perform massive interleaved acquire and release sequences
     for (size_t i = 0; i < ITERATIONS; ++i) {
         auto block = pool_.acquire_block();
         ASSERT_NE(block.data(), nullptr);
@@ -92,12 +81,10 @@ TEST_F(BlockPoolTest, RingBufferIndexMaskingWrapAround) {
     SUCCEED();
 }
 
-// 3. Futex Spurious Wakeup Resiliency
 TEST_F(BlockPoolTest, FutexSpuriousWakeupResiliency) {
     std::vector<std::span<std::byte>> acquired_blocks;
     acquired_blocks.reserve(pool_.capacity());
 
-    // Saturated to complete exhaustion (head_ == tail_)
     for (size_t i = 0; i < pool_.capacity(); ++i) {
         acquired_blocks.push_back(pool_.acquire_block());
     }
@@ -117,7 +104,6 @@ TEST_F(BlockPoolTest, FutexSpuriousWakeupResiliency) {
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
 
-    // Proxy the notification through the Test Peer
     BlockPoolTestPeer::tail(pool_).notify_one();
 
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -128,26 +114,21 @@ TEST_F(BlockPoolTest, FutexSpuriousWakeupResiliency) {
     EXPECT_TRUE(custom_wakeup_passed.load(std::memory_order_acquire));
 }
 
-// 4. Pointer-to-ID Mapping Boundary Verification
 TEST_F(BlockPoolTest, PointerToIDMappingBoundaryVerification) {
-    // Acquire all blocks sequentially to find absolute bounds
     std::vector<std::span<std::byte>> blocks;
     blocks.reserve(pool_.capacity());
     for (size_t i = 0; i < pool_.capacity(); ++i) {
         blocks.push_back(pool_.acquire_block());
     }
 
-    // Sort to identify absolute base bounds
     std::ranges::sort(blocks, [](const auto& a, const auto& b) -> auto { return a.data() < b.data(); });
 
     auto boundary_a = blocks.front();
     auto boundary_b = blocks.back();
 
-    // Release them and ensure internal offset calculations evaluate cleanly
     pool_.release_block(boundary_a);
     pool_.release_block(boundary_b);
 
-    // Re-acquire and ensure the identity matches perfectly
     auto re_a = pool_.acquire_block();
     auto re_b = pool_.acquire_block();
 
@@ -155,7 +136,6 @@ TEST_F(BlockPoolTest, PointerToIDMappingBoundaryVerification) {
                 || (re_a.data() == boundary_b.data() && re_b.data() == boundary_a.data()));
 }
 
-// 5. High-Contention Symmetric Multi-Consumer Stress Test
 TEST_F(BlockPoolTest, HighContentionSymmetricMultiConsumerStress) {
     constexpr int CONSUMER_THREADS = 16;
     constexpr int BLOCKS_PER_THREAD = 1000;
@@ -167,7 +147,6 @@ TEST_F(BlockPoolTest, HighContentionSymmetricMultiConsumerStress) {
     std::set<void*> active_pointers;
     std::atomic<size_t> total_acquired{0};
 
-    // 1 Dedicated Flusher Thread rapidly returning blocks
     std::atomic<bool> stop_flusher{false};
     std::vector<std::span<std::byte>> transfer_queue;
     std::mutex queue_mutex;
@@ -190,7 +169,6 @@ TEST_F(BlockPoolTest, HighContentionSymmetricMultiConsumerStress) {
         }
     });
 
-    // Launch Consumers
     for (int i = 0; i < CONSUMER_THREADS; ++i) {
         consumers.emplace_back(
             [this, &start_signal, &tracking_mutex, &active_pointers, &total_acquired, &queue_mutex, &transfer_queue]()
@@ -202,7 +180,6 @@ TEST_F(BlockPoolTest, HighContentionSymmetricMultiConsumerStress) {
                 for (int j = 0; j < BLOCKS_PER_THREAD; ++j) {
                     auto block = pool_.acquire_block();
 
-                    // Invariant Check: No block pointer may be issued to two consumers simultaneously
                     {
                         std::lock_guard<std::mutex> lock(tracking_mutex);
                         auto [iter, inserted] = active_pointers.insert(block.data());
@@ -216,7 +193,6 @@ TEST_F(BlockPoolTest, HighContentionSymmetricMultiConsumerStress) {
                         active_pointers.erase(block.data());
                     }
 
-                    // Push to flusher
                     {
                         std::lock_guard<std::mutex> lock(queue_mutex);
                         transfer_queue.push_back(block);

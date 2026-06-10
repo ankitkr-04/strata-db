@@ -1,14 +1,4 @@
-// tests/wal/wal_manager_config_test.cpp
-//
-// Tests that WalManager selects the correct pipeline variant based on the
-// hardware info and SpscConfig passed at construction time, and that
-// unusual-but-valid config combinations still produce a working manager.
-//
-// The old tests called get_effective_config() (no longer part of the API)
-// and overrode probe functions directly in the TU — both no longer applicable.
-// Config resolution now lives in ConfigResolver; WalManager merely executes.
-
-#include "wal_test_helpers.hpp"
+#include "../support/wal_test_helpers.hpp"
 
 #include <chrono>
 #include <thread>
@@ -19,12 +9,11 @@ using stratadb::wal::WriteBatch;
 
 class WalManagerConfigTest : public WalManagerFixture {};
 
-// Test 1: MPSC (default) pipeline works end-to-end.
 TEST_F(WalManagerConfigTest, MpscPipelineWriteAndFlush) {
     WAL_SKIP_IF_NO_ODIRECT(wal_dir.path);
 
     auto cfg = make_wal_cfg();
-    cfg.spsc.mode = stratadb::config::SpscMode::Disabled; // MPSC
+    cfg.spsc.mode = stratadb::config::SpscMode::Disabled;
 
     auto wal = make_wal(cfg);
     wal->start_flusher();
@@ -35,14 +24,13 @@ TEST_F(WalManagerConfigTest, MpscPipelineWriteAndFlush) {
     SUCCEED();
 }
 
-// Test 2: SPSC with ManualOverride core 0 — flusher pins and still works.
 TEST_F(WalManagerConfigTest, SpscManualOverrideCore0) {
     WAL_SKIP_IF_NO_ODIRECT(wal_dir.path);
 
     auto cfg = make_wal_cfg();
     cfg.spsc.mode = stratadb::config::SpscMode::ManualOverride;
     cfg.spsc.core_id = 0;
-    cfg.spsc.request_realtime_priority = false; // avoid CAP_SYS_NICE requirement
+    cfg.spsc.request_realtime_priority = false;
 
     auto wal = make_wal(cfg);
     wal->start_flusher();
@@ -53,11 +41,10 @@ TEST_F(WalManagerConfigTest, SpscManualOverrideCore0) {
     SUCCEED();
 }
 
-// Test 3: Rotational (HDD) hardware → DeltaBlock pipeline selected.
 TEST_F(WalManagerConfigTest, RotationalHardwareSelectsDeltaBlock) {
     WAL_SKIP_IF_NO_ODIRECT(wal_dir.path);
 
-    hw_info = make_test_hw_info_hdd(); // is_rotational = true
+    hw_info = make_test_hw_info_hdd();
 
     auto cfg = make_wal_cfg();
     auto wal = make_wal(cfg);
@@ -69,11 +56,10 @@ TEST_F(WalManagerConfigTest, RotationalHardwareSelectsDeltaBlock) {
     SUCCEED();
 }
 
-// Test 4: 16 KiB physical sector NVMe → Ssd16k pipeline selected.
 TEST_F(WalManagerConfigTest, LargePhysicalSectorSelects16kPipeline) {
     WAL_SKIP_IF_NO_ODIRECT(wal_dir.path);
 
-    hw_info = make_test_hw_info_16k(); // physical_sector_size = 16384
+    hw_info = make_test_hw_info_16k();
 
     // Pool block must be at least LAYOUT_OFFSET(4096) + sizeof(GammaBlock<16384>).
     // sizeof(GammaBlock<16384>) = 16384+16 rounded to next 4096 multiple = 20480.
@@ -93,11 +79,9 @@ TEST_F(WalManagerConfigTest, LargePhysicalSectorSelects16kPipeline) {
     SUCCEED();
 }
 
-// Test 5: sync_on_commit = false — flusher skips fdatasync, still works.
 TEST_F(WalManagerConfigTest, SyncOnCommitDisabled) {
     WAL_SKIP_IF_NO_ODIRECT(wal_dir.path);
 
-    // Disable sync at the mutable-config level.
     mut_cfg.wal_tuning.sync_on_commit = false;
     auto result = config_mgr.update_mutable(mut_cfg);
     ASSERT_TRUE(result.has_value());
@@ -111,12 +95,9 @@ TEST_F(WalManagerConfigTest, SyncOnCommitDisabled) {
     SUCCEED();
 }
 
-// Test 6: Constructor does not hang on fresh directory with no existing files.
 TEST_F(WalManagerConfigTest, FreshDirectoryConstructionSucceeds) {
     WAL_SKIP_IF_NO_ODIRECT(wal_dir.path);
 
-    // Just construct — the Vanguard should start pre-allocating without blocking
-    // the caller.
     auto wal = make_wal();
-    SUCCEED(); // destructor cleans up cleanly
+    SUCCEED();
 }

@@ -100,7 +100,7 @@ TEST(VirtualRegion, MoveAssignment) {
 
 TEST(VirtualRegion, HugePagesOpportunisticDoesNotCrash) {
     constexpr std::size_t kSize = 8ULL * 1024 * 1024;
-    // May fall back to standard 4K if hugepages are unavailable — that's fine.
+    // May fall back to standard 4K if hugepages are unavailable.
     auto result = VirtualRegion::allocate(make_cfg(kSize, PageStrategy::Huge2M_Opportunistic));
 
     // Either succeeds with 2M pages or silently falls back to 4K.
@@ -140,7 +140,7 @@ TEST(VirtualRegion, ActualPageStrategyReflectsReality) {
     auto result = VirtualRegion::allocate(make_cfg(kSize, PageStrategy::Standard4K));
 
     ASSERT_TRUE(result.has_value());
-    // Standard4K never degrades — it must always match.
+    // Standard4K never degrades; it must always match.
     EXPECT_EQ(result->actual_page_strategy(), PageStrategy::Standard4K);
 }
 

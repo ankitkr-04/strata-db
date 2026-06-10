@@ -1,17 +1,4 @@
-// tests/wal/wal_manager_test.cpp
-//
-// Functional tests for WalManager with the segment-pool architecture.
-// The old tests referenced a single-fd constructor that no longer exists.
-//
-// Coverage:
-//   BasicWriteAndFlush         — write a batch, flush, verify WAL files appear
-//   EmptyBatch                 — empty write_batch must not crash
-//   WaitForDurableSignals      — durability notification fires after flush
-//   ConcurrentWriters          — 8 threads × batches, clean shutdown
-//   MultipleSegments           — write enough data to trigger rotation
-//   CleanShutdownUnderLoad     — destroy with queued batches, no crash
-
-#include "wal_test_helpers.hpp"
+#include "../support/wal_test_helpers.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -37,8 +24,6 @@ auto count_wal_files(const std::filesystem::path& dir) -> std::size_t {
 }
 
 } // namespace
-
-// Tests
 
 class WalManagerTest : public WalManagerFixture {};
 
@@ -82,7 +67,7 @@ TEST_F(WalManagerTest, WaitForDurableSignals) {
     wal->write_batch(batch);
     wal->flush();
 
-    // wait_for_durable must return — it should not block forever once the
+    // wait_for_durable must not block forever once the
     // flusher has processed at least one block (LSN 1).
     std::atomic<bool> done{false};
     std::thread waiter([&] {
@@ -134,7 +119,7 @@ TEST_F(WalManagerTest, MultipleSegmentRotation) {
     auto wal = make_wal(cfg);
     wal->start_flusher();
 
-    // Write many small batches — each forces at least one 4 KiB block into the
+    // Write many small batches; each forces at least one 4 KiB block into the
     // pipeline.  With a 16 KiB slot we expect rotation after 2-3 writes.
     for (int i = 0; i < 10; ++i) {
         WriteBatch b{{"key_" + std::to_string(i), std::string(100, 'A')}};

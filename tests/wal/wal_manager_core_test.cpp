@@ -1,11 +1,4 @@
-// tests/wal/wal_manager_core_test.cpp
-//
-// Runtime fault-injection tests for WalManager.
-// Test hooks are only compiled in debug builds (#ifndef NDEBUG).
-// Tests that rely on them are wrapped accordingly so the suite still
-// compiles and runs (skipping gracefully) in release builds.
-
-#include "wal_test_helpers.hpp"
+#include "../support/wal_test_helpers.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -16,7 +9,6 @@ using namespace stratadb::wal::test;
 using stratadb::wal::WalManager;
 using stratadb::wal::WriteBatch;
 
-// External hook declarations (debug-only)
 #ifndef NDEBUG
 namespace stratadb::utils::os::test_hooks {
 extern std::atomic<bool> fail_core_pinning;
@@ -30,7 +22,6 @@ extern std::atomic<ssize_t> mock_short_write_bytes;
 } // namespace stratadb::io::test_hooks
 #endif
 
-// Fixture
 class WalManagerCoreTest : public WalManagerFixture {
   protected:
     void SetUp() override {
@@ -54,8 +45,6 @@ class WalManagerCoreTest : public WalManagerFixture {
     }
 };
 
-// Test 11: Core pinning failure — flusher should continue on the OS-assigned
-// core rather than terminating.
 TEST_F(WalManagerCoreTest, CorePinningFailureRecovery) {
     WAL_SKIP_IF_NO_ODIRECT(wal_dir.path);
 #ifdef NDEBUG
@@ -78,7 +67,6 @@ TEST_F(WalManagerCoreTest, CorePinningFailureRecovery) {
 #endif
 }
 
-// Test 12: RT elevation failure — flusher continues without realtime priority.
 TEST_F(WalManagerCoreTest, RealTimeElevationFailureFallback) {
     WAL_SKIP_IF_NO_ODIRECT(wal_dir.path);
 #ifdef NDEBUG
@@ -101,7 +89,6 @@ TEST_F(WalManagerCoreTest, RealTimeElevationFailureFallback) {
 #endif
 }
 
-// Test 13: Stalled writer — wait_for_durable must unblock after flush.
 TEST_F(WalManagerCoreTest, StalledWriterUnblocksAfterFlush) {
     WAL_SKIP_IF_NO_ODIRECT(wal_dir.path);
 
@@ -117,7 +104,6 @@ TEST_F(WalManagerCoreTest, StalledWriterUnblocksAfterFlush) {
         done.store(true, std::memory_order_release);
     });
 
-    // Before flush, durable_lsn may still be 0.
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
 
     wal->flush();
@@ -125,7 +111,6 @@ TEST_F(WalManagerCoreTest, StalledWriterUnblocksAfterFlush) {
     EXPECT_TRUE(done.load());
 }
 
-// Test 14: Fsync failure — flusher continues without crash.
 TEST_F(WalManagerCoreTest, FsyncFailureContinues) {
     WAL_SKIP_IF_NO_ODIRECT(wal_dir.path);
 #ifdef NDEBUG
@@ -143,7 +128,6 @@ TEST_F(WalManagerCoreTest, FsyncFailureContinues) {
 #endif
 }
 
-// Test 15: I/O error — flusher continues, no crash.
 TEST_F(WalManagerCoreTest, IoErrorFlusherContinues) {
     WAL_SKIP_IF_NO_ODIRECT(wal_dir.path);
 #ifdef NDEBUG
@@ -161,13 +145,11 @@ TEST_F(WalManagerCoreTest, IoErrorFlusherContinues) {
 #endif
 }
 
-// Test 16: Short write — handled gracefully (no crash, no infinite loop).
 TEST_F(WalManagerCoreTest, ShortWriteHandledGracefully) {
     WAL_SKIP_IF_NO_ODIRECT(wal_dir.path);
 #ifdef NDEBUG
     GTEST_SKIP() << "Test hooks only available in debug builds";
 #else
-    // Allow only 512 bytes per write to force short-write paths.
     stratadb::io::test_hooks::mock_short_write_bytes.store(512);
 
     auto wal = make_wal();
@@ -180,19 +162,17 @@ TEST_F(WalManagerCoreTest, ShortWriteHandledGracefully) {
 #endif
 }
 
-// Test 17: Empty batch — flusher handles zero-work batches cleanly.
 TEST_F(WalManagerCoreTest, EmptyBatchNoWork) {
     WAL_SKIP_IF_NO_ODIRECT(wal_dir.path);
 
     auto wal = make_wal();
     wal->start_flusher();
 
-    wal->write_batch({}); // nothing to stage
+    wal->write_batch({});
     wal->flush();
     SUCCEED();
 }
 
-// Test 18: Massive concurrent group commit.
 TEST_F(WalManagerCoreTest, MassiveConcurrentGroupCommit) {
     WAL_SKIP_IF_NO_ODIRECT(wal_dir.path);
 
@@ -211,7 +191,6 @@ TEST_F(WalManagerCoreTest, MassiveConcurrentGroupCommit) {
     SUCCEED();
 }
 
-// Test 19: Abrupt destruction with high-density queue backlog.
 TEST_F(WalManagerCoreTest, AbruptDestructionWithBacklog) {
     WAL_SKIP_IF_NO_ODIRECT(wal_dir.path);
 
@@ -221,12 +200,10 @@ TEST_F(WalManagerCoreTest, AbruptDestructionWithBacklog) {
         for (int i = 0; i < 300; ++i) {
             wal->write_batch({{"backlog_" + std::to_string(i), "d"}});
         }
-        // Destructor joins the flusher cleanly even with many queued items.
     }
     SUCCEED();
 }
 
-// Test 20: wait_for_durable already satisfied returns immediately.
 TEST_F(WalManagerCoreTest, WaitForDurableAlreadySatisfied) {
     WAL_SKIP_IF_NO_ODIRECT(wal_dir.path);
 
@@ -237,7 +214,6 @@ TEST_F(WalManagerCoreTest, WaitForDurableAlreadySatisfied) {
     wal->flush();
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-    // By now LSN 1 should be durable; this must return quickly.
     const auto start = std::chrono::steady_clock::now();
     wal->wait_for_durable(1);
     const auto elapsed =
