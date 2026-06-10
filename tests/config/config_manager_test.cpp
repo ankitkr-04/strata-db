@@ -1,3 +1,4 @@
+#include "../support/common.hpp"
 #include "stratadb/config/config_manager.hpp"
 #include "stratadb/memory/epoch_manager.hpp"
 
@@ -11,36 +12,14 @@ using stratadb::config::ConfigManager;
 using stratadb::config::ImmutableConfig;
 using stratadb::config::MutableConfig;
 using stratadb::memory::EpochManager;
+using stratadb::test::DestructionSpy;
+using stratadb::test::do_not_optimize;
 
 namespace {
 
-template <typename T>
-void do_not_optimize(const T& value) noexcept {
-#if defined(__GNUC__) || defined(__clang__)
-    __asm__ __volatile__("" : : "g"(value) : "memory");
-#else
-    (void)value;
-    std::atomic_signal_fence(std::memory_order_seq_cst);
-#endif
-}
+struct TrackableConfig : public MutableConfig, public DestructionSpy {};
 
 } // namespace
-
-struct TrackableConfig : public MutableConfig {
-    static std::atomic<int> destructions;
-
-    TrackableConfig() = default;
-    TrackableConfig(const TrackableConfig&) = default;
-    TrackableConfig(TrackableConfig&&) noexcept = default;
-    auto operator=(const TrackableConfig&) -> TrackableConfig& = default;
-    auto operator=(TrackableConfig&&) noexcept -> TrackableConfig& = default;
-
-    ~TrackableConfig() {
-        destructions.fetch_add(1, std::memory_order_relaxed);
-    }
-};
-
-std::atomic<int> TrackableConfig::destructions{0};
 
 TEST(ConfigManagerTest, BasicRead) {
     EpochManager epoch;
@@ -87,17 +66,17 @@ TEST(ConfigManagerTest, ConcurrentReaders) {
     ImmutableConfig imm{};
     ConfigManager mgr(imm, mut, epoch);
 
-    constexpr int NUM_THREADS = 8;
-    constexpr int ITERS = 10000;
+    constexpr int kNumThreads = 8;
+    constexpr int kIters = 10000;
 
     std::vector<std::jthread> threads;
-    threads.reserve(NUM_THREADS);
+    threads.reserve(kNumThreads);
 
-    for (int i = 0; i < NUM_THREADS; ++i) {
+    for (int i = 0; i < kNumThreads; ++i) {
         threads.emplace_back([&] {
             EpochManager::ThreadRegistrationGuard local_tg(epoch);
 
-            for (int j = 0; j < ITERS; ++j) {
+            for (int j = 0; j < kIters; ++j) {
                 auto guard = mgr.get_mutable();
                 auto x = guard->background_compaction_threads;
                 do_not_optimize(x);
@@ -114,22 +93,22 @@ TEST(ConfigManagerTest, ConcurrentReadWrite) {
     ImmutableConfig imm{};
     ConfigManager mgr(imm, mut, epoch);
 
-    constexpr int NUM_READERS = 8;
-    constexpr int NUM_WRITES = 5000;
+    constexpr int kNumReaders = 8;
+    constexpr int kNumWrites = 5000;
 
     std::atomic<bool> start{false};
 
     std::vector<std::jthread> threads;
-    threads.reserve(NUM_READERS + 1);
+    threads.reserve(kNumReaders + 1);
 
-    for (int i = 0; i < NUM_READERS; ++i) {
+    for (int i = 0; i < kNumReaders; ++i) {
         threads.emplace_back([&] {
             EpochManager::ThreadRegistrationGuard local_tg(epoch);
 
             while (!start.load(std::memory_order_acquire)) {
             }
 
-            for (int j = 0; j < NUM_WRITES; ++j) {
+            for (int j = 0; j < kNumWrites; ++j) {
                 auto guard = mgr.get_mutable();
                 auto x = guard->background_compaction_threads;
                 do_not_optimize(x);
@@ -142,7 +121,7 @@ TEST(ConfigManagerTest, ConcurrentReadWrite) {
 
         start.store(true, std::memory_order_release);
 
-        for (std::uint32_t i = 0; i < static_cast<std::uint32_t>(NUM_WRITES); ++i) {
+        for (std::uint32_t i = 0; i < static_cast<std::uint32_t>(kNumWrites); ++i) {
             MutableConfig cfg{};
             cfg.background_compaction_threads = i;
 
@@ -163,19 +142,18 @@ TEST(ConfigManagerTest, NoUseAfterFreeStress) {
     ImmutableConfig imm{};
     ConfigManager mgr(imm, mut, epoch);
 
-    constexpr int NUM_THREADS = 12;
-    constexpr int ITERS = 20000;
+    constexpr int kNumThreads = 12;
+    constexpr int kIters = 20000;
 
     std::vector<std::jthread> threads;
-    threads.reserve(NUM_THREADS + 1);
+    threads.reserve(kNumThreads + 1);
 
-    for (int i = 0; i < NUM_THREADS; ++i) {
+    for (int i = 0; i < kNumThreads; ++i) {
         threads.emplace_back([&] {
             EpochManager::ThreadRegistrationGuard local_tg(epoch);
 
-            for (int j = 0; j < ITERS; ++j) {
+            for (int j = 0; j < kIters; ++j) {
                 auto guard = mgr.get_mutable();
-
                 auto x = guard->background_compaction_threads;
                 do_not_optimize(x);
 
@@ -189,7 +167,7 @@ TEST(ConfigManagerTest, NoUseAfterFreeStress) {
     threads.emplace_back([&] {
         EpochManager::ThreadRegistrationGuard local_tg(epoch);
 
-        for (std::uint32_t i = 0; i < static_cast<std::uint32_t>(ITERS); ++i) {
+        for (std::uint32_t i = 0; i < static_cast<std::uint32_t>(kIters); ++i) {
             MutableConfig cfg{};
             cfg.background_compaction_threads = i;
             ASSERT_TRUE(mgr.update_mutable(cfg).has_value());
@@ -201,7 +179,7 @@ TEST(ConfigManagerTest, ReclamationOccurs) {
     EpochManager epoch;
     EpochManager::ThreadRegistrationGuard tg(epoch);
 
-    TrackableConfig::destructions.store(0);
+    TrackableConfig::reset();
 
     ImmutableConfig imm{};
     TrackableConfig mut{};
@@ -214,7 +192,7 @@ TEST(ConfigManagerTest, ReclamationOccurs) {
         epoch.quiescent_reclaim();
     }
 
-    ASSERT_GT(TrackableConfig::destructions.load(), 0);
+    ASSERT_GT(TrackableConfig::count.load(), 0);
 }
 
 TEST(ConfigManagerTest, PointerStability) {
