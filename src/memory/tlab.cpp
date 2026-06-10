@@ -15,7 +15,7 @@ auto TLAB::allocate_slow(std::size_t size, std::size_t alignment) noexcept -> vo
     if (arena_ == nullptr) [[unlikely]] {
         return nullptr; // TLAB is detached
     }
-    if (size >= (arena_->large_alloc_fraction())) {
+    if (size >= (arena_->large_alloc_threshold())) {
         return arena_->allocate_aligned(size, alignment);
     }
 
