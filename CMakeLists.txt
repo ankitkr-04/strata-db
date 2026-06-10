@@ -141,8 +141,8 @@ add_executable(stratadb_tests
   tests/config/config_manager_test.cpp
   tests/memory/arena_test.cpp
   tests/memory/tlab_test.cpp
+  tests/memtable/skiplist_node_test.cpp
   tests/memtable/skiplist_memtable_test.cpp
-  tests/memtable/skiplist_memtable_edge_test.cpp
   tests/wal/wal_manager_test.cpp
   tests/memory/block_pool_test.cpp
   tests/wal/wal_manager_core_test.cpp
@@ -150,8 +150,7 @@ add_executable(stratadb_tests
   tests/wal/wal_segment_pool_test.cpp
   tests/wal/wal_reader_test.cpp
   tests/wal/block_format_test.cpp
-  tests/wal/vyukov_mpsc_queue_test.cpp
-  tests/wal/spsc_mailbox_queue_test.cpp
+  tests/wal/queue_test.cpp
   tests/io/posix_io_engine_test.cpp
   tests/memory/virtual_region_test.cpp
   tests/platform/hardware_probe_test.cpp
