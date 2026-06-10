@@ -9,6 +9,7 @@
 
 using namespace stratadb::wal;
 
+// Helpers
 namespace {
 
 MpscNode* make_node() {
@@ -17,6 +18,7 @@ MpscNode* make_node() {
     return n;
 }
 
+// Pop all available items from the queue into `out`.
 void drain(VyukovMpscQueue& q, std::vector<MpscNode*>& out) {
     while (true) {
         auto [payload, free_node] = q.pop();
@@ -24,17 +26,19 @@ void drain(VyukovMpscQueue& q, std::vector<MpscNode*>& out) {
             break;
         out.push_back(payload);
 
-        if (free_node && free_node != payload) {
-            delete free_node;
-        }
+        // FIX: Do NOT delete free_node here. The first free_node is the
+        // statically allocated `stub_`. The test will clean up all allocated
+        // nodes using the tracking vectors at the end of the test.
     }
 }
 
 } // namespace
 
+// Tests
+
 TEST(VyukovMpscQueue, EmptyQueueReturnsNull) {
     VyukovMpscQueue q;
-    auto [payload, free_node] = q.pop();
+    [[maybe_unused]] auto [payload, free_node] = q.pop();
     EXPECT_EQ(payload, nullptr);
     EXPECT_EQ(free_node, nullptr);
 }
@@ -59,6 +63,10 @@ TEST(VyukovMpscQueue, SingleThreadFIFO) {
     for (std::size_t i = 0; i < N; ++i) {
         EXPECT_EQ(received[i], nodes[i]) << "Order violation at index " << i;
     }
+
+    // RESTORED FIX: Safely delete all nodes we manually allocated.
+    for (auto* n : nodes)
+        delete n;
 }
 
 TEST(VyukovMpscQueue, MultiProducerStress) {
@@ -90,9 +98,7 @@ TEST(VyukovMpscQueue, MultiProducerStress) {
             if (!seen.insert(payload).second) {
                 duplicate.store(true);
             }
-            if (free_node && free_node != payload) {
-                delete free_node;
-            }
+            // FIX: Removed the unsafe delete free_node
             consumed.fetch_add(1, std::memory_order_relaxed);
         }
     });
@@ -120,6 +126,10 @@ TEST(VyukovMpscQueue, MultiProducerStress) {
 
     EXPECT_EQ(consumed.load(), kTotal);
     EXPECT_FALSE(duplicate.load()) << "Duplicate pointer received — queue is broken";
+
+    // RESTORED FIX: Safely clean up all memory.
+    for (auto* n : all_nodes)
+        delete n;
 }
 
 TEST(VyukovMpscQueue, WakeupOnPush) {
@@ -141,10 +151,10 @@ TEST(VyukovMpscQueue, WakeupOnPush) {
     consumer.join();
     EXPECT_TRUE(woken.load());
 
-    auto [payload, free_node] = q.pop();
-    if (free_node && free_node != payload) {
-        delete free_node;
-    }
+    [[maybe_unused]] auto [payload, free_node] = q.pop();
+
+    // RESTORED FIX
+    delete n;
 }
 
 TEST(VyukovMpscQueue, ForceWakeupUnblocks) {

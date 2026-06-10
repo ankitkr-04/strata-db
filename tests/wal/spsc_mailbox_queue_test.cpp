@@ -38,51 +38,41 @@ MpscNode* make_node() {
 TEST(SpscMailboxQueue, SingleProducerConsumerPingPong) {
     SpscMailboxQueue q;
 
-    constexpr int kItems = 1'000'000;
+    constexpr int kItems = 100'000; // Lowered to 100k so TSAN runs fast
 
-    // Pre-allocate; producer reuses the same node each round (SPSC is safe).
-    MpscNode node{};
-    node.pool_managed = false;
-
-    std::atomic<long long> received{0};
-    std::atomic<bool> done{false};
+    // Pre-allocate all nodes to simulate the BlockPool
+    std::vector<MpscNode*> nodes;
+    nodes.reserve(kItems);
+    for (int i = 0; i < kItems; ++i) {
+        nodes.push_back(make_node());
+    }
 
     std::thread consumer([&] {
-        long long count = 0;
+        int count = 0;
         while (count < kItems) {
             auto [payload, free_node] = q.pop();
-            if (payload)
+            if (payload) {
                 ++count;
-            else
+            } else {
                 std::this_thread::yield();
+            }
         }
-        received.store(count, std::memory_order_release);
-        done.store(true, std::memory_order_release);
     });
 
-    // Producer: push kItems times.
-    for (int i = 0; i < kItems; ++i) {
-        // SpscMailboxQueue::push spins if the ring is full — that's fine.
-        // But we need a fresh node per push because the consumer will hold
-        // a reference until it pops.  Use a rotating pool of 512 nodes so we
-        // never re-push the same node while the consumer still holds it.
-        // (In production the BlockPool provides this guarantee.)
-        // For this test we simply spin-push: push loops internally.
-        q.push(&node);
-        // Busy-wait until the consumer pops it (ensures node isn't reused
-        // while the ring still holds a pointer to it).
-        while (q.pop().payload_node == nullptr)
-            std::this_thread::yield();
-        // Account for the pop we just did inside the producer thread.
-        received.fetch_add(1, std::memory_order_relaxed);
+    // Producer ONLY pushes.
+    // If the queue hits its internal capacity limit, push() will safely
+    // spin-wait internally until the consumer pops items.
+    for (std::size_t i = 0; i < kItems; ++i) {
+        q.push(nodes[i]);
     }
 
     consumer.join();
-    // Both the producer's inline pops and the consumer's pops sum to kItems.
-    // We just verify no crash / deadlock occurred for 1 M transfers.
-    SUCCEED();
-}
 
+    // Clean up
+    for (auto* n : nodes) {
+        delete n;
+    }
+}
 // Test 2: Multiple producers, each writing to their own mailbox
 TEST(SpscMailboxQueue, MultipleMailboxesIsolated) {
     SpscMailboxQueue q;
