@@ -52,7 +52,7 @@ TEST_F(WalManagerCoreTest, CorePinningFailureRecovery) {
 #else
     stratadb::utils::os::test_hooks::fail_core_pinning.store(true);
 
-    auto cfg = make_wal_cfg();
+    auto cfg = stratadb::test::test_wal_config();
     cfg.spsc.mode = stratadb::config::SpscMode::ManualOverride;
     cfg.spsc.core_id = 0;
     cfg.spsc.request_realtime_priority = false;
@@ -74,7 +74,7 @@ TEST_F(WalManagerCoreTest, RealTimeElevationFailureFallback) {
 #else
     stratadb::utils::os::test_hooks::fail_realtime_elevation.store(true);
 
-    auto cfg = make_wal_cfg();
+    auto cfg = stratadb::test::test_wal_config();
     cfg.spsc.mode = stratadb::config::SpscMode::ManualOverride;
     cfg.spsc.core_id = 0;
     cfg.spsc.request_realtime_priority = true;

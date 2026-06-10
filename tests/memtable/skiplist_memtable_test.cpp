@@ -77,7 +77,7 @@ TEST_F(SkipListMemTableTest, RemoveCreatesTombstone) {
 TEST(SkipListMemTable, FlushThresholdBlocksWrites) {
     auto arena = make_test_arena();
 
-    MemTableConfig cfg{};
+    auto cfg = stratadb::test::test_memtable_config();
     cfg.flush_trigger_bytes = 0;
     cfg.stall_trigger_bytes = std::numeric_limits<std::size_t>::max();
 
@@ -92,7 +92,7 @@ TEST(SkipListMemTable, FlushThresholdBlocksWrites) {
 TEST(SkipListMemTable, StallThresholdReturnsStallNeeded) {
     auto arena = make_test_arena();
 
-    MemTableConfig cfg{};
+    auto cfg = stratadb::test::test_memtable_config();
     cfg.flush_trigger_bytes = std::numeric_limits<std::size_t>::max();
     cfg.stall_trigger_bytes = 0;
 
@@ -230,7 +230,7 @@ TEST_F(SkipListMemTableTest, ScanExposesTombstones) {
 
     int live_count = 0;
     int tombstone_count = 0;
-    mt.scan([&](const SkipListMemTable::EntryView& entry) {
+    mt.scan([&](const SkipListMemTable::EntryView& entry) -> void {
         if (entry.type == ValueType::TypeDeletion) {
             ++tombstone_count;
         } else {
@@ -292,7 +292,7 @@ TEST(SkipListMemTable, SequenceNumbersAreUnique) {
         worker.join();
     }
 
-    memtable.scan([&](const SkipListMemTable::EntryView& entry) {
+    memtable.scan([&](const SkipListMemTable::EntryView& entry) -> void {
         std::lock_guard lock(mu);
         seqs.insert(entry.sequence);
     });
@@ -307,7 +307,7 @@ TEST_F(SkipListMemTableTest, ScanNewestVersionFirstForDuplicates) {
     ASSERT_EQ(mt.put("k", "v3", tlab), PutResult::Ok);
 
     std::vector<std::pair<std::uint64_t, std::string>> entries;
-    mt.scan([&](const SkipListMemTable::EntryView& entry) {
+    mt.scan([&](const SkipListMemTable::EntryView& entry) -> void {
         if (entry.key == "k") {
             entries.emplace_back(entry.sequence, std::string(entry.value));
         }
@@ -336,10 +336,10 @@ TEST(SkipListMemTable, LargeBatchScanIsSorted) {
 
     std::vector<std::string> keys_seen;
     keys_seen.reserve(kEntries);
-    memtable.scan([&](const SkipListMemTable::EntryView& entry) { keys_seen.emplace_back(entry.key); });
+    memtable.scan([&](const SkipListMemTable::EntryView& entry) -> void { keys_seen.emplace_back(entry.key); });
 
     ASSERT_EQ(keys_seen.size(), kEntries);
-    EXPECT_TRUE(std::is_sorted(keys_seen.begin(), keys_seen.end()));
+    EXPECT_TRUE(std::ranges::is_sorted(keys_seen));
 }
 
 TEST_F(SkipListMemTableTest, GetOnNeverInsertedKey) {
@@ -355,7 +355,7 @@ TEST(SkipListMemTable, OomReturnNotCrash) {
     constexpr std::size_t kTinyArenaSize = 4096;
 
     auto arena = make_test_arena(kTinyArenaSize, 4096);
-    auto memtable = make_test_memtable(arena, stratadb::helper::make_test_memtable_config(kTinyArenaSize));
+    auto memtable = make_test_memtable(arena, stratadb::test::test_memtable_config(kTinyArenaSize));
     TLAB tlab(arena);
 
     PutResult last = PutResult::Ok;

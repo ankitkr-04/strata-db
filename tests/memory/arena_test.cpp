@@ -1,7 +1,5 @@
-#include "../helper/test_config_helper.hpp"
+#include "../support/test_config.hpp"
 #include "stratadb/memory/arena.hpp"
-#include "stratadb/utils/cache.hpp"
-#include "stratadb/utils/probe.hpp"
 
 #include <atomic>
 #include <gtest/gtest.h>
@@ -15,7 +13,7 @@ using namespace stratadb::config;
 // ---------- tests ----------
 
 TEST(Arena, Initialization) {
-    auto cfg = stratadb::helper::make_test_memory_config(10ULL * 1024 * 1024);
+    auto cfg = stratadb::test::test_memory_config(10ULL * 1024 * 1024);
 
     auto arena_exp = Arena::create(cfg);
     ASSERT_TRUE(arena_exp.has_value());
@@ -28,7 +26,7 @@ TEST(Arena, Initialization) {
 }
 
 TEST(Arena, AllocateBlockBasic) {
-    auto cfg = stratadb::helper::make_test_memory_config(10ULL * 1024 * 1024);
+    auto cfg = stratadb::test::test_memory_config(10ULL * 1024 * 1024);
 
     auto arena = Arena::create(cfg).value();
 
@@ -41,7 +39,7 @@ TEST(Arena, AllocateBlockBasic) {
 }
 
 TEST(Arena, AllocateBlockLarge) {
-    auto cfg = stratadb::helper::make_test_memory_config(20ULL * 1024 * 1024);
+    auto cfg = stratadb::test::test_memory_config(20ULL * 1024 * 1024);
 
     auto arena = Arena::create(cfg).value();
     const std::size_t expected_alignment = cfg.block_alignment_bytes;
@@ -56,7 +54,7 @@ TEST(Arena, AllocateBlockLarge) {
 }
 
 TEST(Arena, Alignment) {
-    auto cfg = stratadb::helper::make_test_memory_config(10ULL * 1024 * 1024);
+    auto cfg = stratadb::test::test_memory_config(10ULL * 1024 * 1024);
 
     auto arena = Arena::create(cfg).value();
     const std::size_t expected_alignment = cfg.block_alignment_bytes;
@@ -70,7 +68,7 @@ TEST(Arena, Alignment) {
 }
 
 TEST(Arena, OutOfMemory) {
-    auto cfg = stratadb::helper::make_test_memory_config(8ULL * 1024 * 1024);
+    auto cfg = stratadb::test::test_memory_config(8ULL * 1024 * 1024);
 
     auto arena = Arena::create(cfg).value();
 
@@ -90,7 +88,7 @@ TEST(Arena, OutOfMemory) {
 }
 
 TEST(Arena, Reset) {
-    auto cfg = stratadb::helper::make_test_memory_config(10ULL * 1024 * 1024);
+    auto cfg = stratadb::test::test_memory_config(10ULL * 1024 * 1024);
 
     auto arena = Arena::create(cfg).value();
 
@@ -111,7 +109,7 @@ TEST(Arena, Reset) {
 }
 
 TEST(Arena, MoveSemantics) {
-    auto cfg = stratadb::helper::make_test_memory_config(10ULL * 1024 * 1024);
+    auto cfg = stratadb::test::test_memory_config(10ULL * 1024 * 1024);
 
     auto a = Arena::create(cfg).value();
 
@@ -130,7 +128,7 @@ TEST(Arena, MoveSemantics) {
 }
 
 TEST(Arena, NoOverlap) {
-    auto cfg = stratadb::helper::make_test_memory_config(20ULL * 1024 * 1024);
+    auto cfg = stratadb::test::test_memory_config(20ULL * 1024 * 1024);
 
     auto arena = Arena::create(cfg).value();
 
@@ -151,7 +149,7 @@ TEST(Arena, NoOverlap) {
 }
 
 TEST(Arena, NearBoundary) {
-    auto cfg = stratadb::helper::make_test_memory_config(4ULL * 1024 * 1024);
+    auto cfg = stratadb::test::test_memory_config(4ULL * 1024 * 1024);
 
     auto arena = Arena::create(cfg).value();
 
@@ -164,7 +162,7 @@ TEST(Arena, NearBoundary) {
 }
 
 TEST(Arena, ConcurrentAllocation) {
-    auto cfg = stratadb::helper::make_test_memory_config(512ULL * 1024 * 1024);
+    auto cfg = stratadb::test::test_memory_config(512ULL * 1024 * 1024);
 
     auto arena = Arena::create(cfg).value();
 
@@ -193,7 +191,7 @@ TEST(Arena, ConcurrentAllocation) {
 }
 
 TEST(Arena, RandomStress) {
-    auto cfg = stratadb::helper::make_test_memory_config(64ULL * 1024 * 1024);
+    auto cfg = stratadb::test::test_memory_config(64ULL * 1024 * 1024);
 
     auto arena = Arena::create(cfg).value();
 
@@ -211,7 +209,7 @@ TEST(Arena, RandomStress) {
 
 TEST(Arena, NumaPolicyDoesNotCrash) {
 
-    auto cfg = stratadb::helper::make_test_memory_config(16ULL * 1024 * 1024);
+    auto cfg = stratadb::test::test_memory_config(16ULL * 1024 * 1024);
     cfg.numa_policy = NumaPolicy::Interleaved;
 
     auto arena = Arena::create(cfg);
@@ -222,7 +220,7 @@ TEST(Arena, NumaPolicyDoesNotCrash) {
 
 TEST(Arena, PrefaultDoesNotCrash) {
 
-    auto cfg = stratadb::helper::make_test_memory_config(32ULL * 1024 * 1024);
+    auto cfg = stratadb::test::test_memory_config(32ULL * 1024 * 1024);
     cfg.prefault_on_init = true;
 
     auto arena = Arena::create(cfg);

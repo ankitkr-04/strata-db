@@ -110,7 +110,7 @@ TEST_F(WalManagerTest, MultipleSegmentRotation) {
     WAL_SKIP_IF_NO_ODIRECT(wal_dir.path);
 
     // Use a very small slot so rotation happens quickly.
-    auto cfg = make_wal_cfg();
+    auto cfg = stratadb::test::test_wal_config();
     // Minimum: WalSlotHeader(4096) + 1 block(4096) + WalSlotFooter(512) = 8704
     // Use 16 KiB so ~2-3 blocks trigger rotation.
     cfg.slot_size_bytes = 16LL * 1024;

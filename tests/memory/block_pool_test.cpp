@@ -1,3 +1,4 @@
+#include "../support/test_config.hpp"
 #include "stratadb/memory/block_pool.hpp"
 
 #include <algorithm>
@@ -24,13 +25,7 @@ struct BlockPoolTestPeer {
 class BlockPoolTest : public ::testing::Test {
   protected:
     BlockPoolTest()
-        : pool_([] {
-            config::BlockPoolConfig cfg;
-            cfg.capacity = 32768;
-            cfg.block_size_bytes = 4096;
-            cfg.payload_alignment_bytes = 4096;
-            return cfg;
-        }()) {}
+        : pool_(stratadb::test::test_block_pool_config(32768, 4096)) {}
 
     BlockPool pool_;
 };

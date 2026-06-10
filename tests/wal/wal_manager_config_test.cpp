@@ -12,7 +12,7 @@ class WalManagerConfigTest : public WalManagerFixture {};
 TEST_F(WalManagerConfigTest, MpscPipelineWriteAndFlush) {
     WAL_SKIP_IF_NO_ODIRECT(wal_dir.path);
 
-    auto cfg = make_wal_cfg();
+    auto cfg = stratadb::test::test_wal_config();
     cfg.spsc.mode = stratadb::config::SpscMode::Disabled;
 
     auto wal = make_wal(cfg);
@@ -27,7 +27,7 @@ TEST_F(WalManagerConfigTest, MpscPipelineWriteAndFlush) {
 TEST_F(WalManagerConfigTest, SpscManualOverrideCore0) {
     WAL_SKIP_IF_NO_ODIRECT(wal_dir.path);
 
-    auto cfg = make_wal_cfg();
+    auto cfg = stratadb::test::test_wal_config();
     cfg.spsc.mode = stratadb::config::SpscMode::ManualOverride;
     cfg.spsc.core_id = 0;
     cfg.spsc.request_realtime_priority = false;
@@ -46,7 +46,7 @@ TEST_F(WalManagerConfigTest, RotationalHardwareSelectsDeltaBlock) {
 
     hw_info = make_test_hw_info_hdd();
 
-    auto cfg = make_wal_cfg();
+    auto cfg = stratadb::test::test_wal_config();
     auto wal = make_wal(cfg);
     wal->start_flusher();
 
@@ -69,7 +69,7 @@ TEST_F(WalManagerConfigTest, LargePhysicalSectorSelects16kPipeline) {
     if (resolved.has_value())
         imm_cfg = *resolved;
 
-    auto cfg = make_wal_cfg();
+    auto cfg = stratadb::test::test_wal_config();
     auto wal = make_wal(cfg);
     wal->start_flusher();
 
@@ -82,6 +82,7 @@ TEST_F(WalManagerConfigTest, LargePhysicalSectorSelects16kPipeline) {
 TEST_F(WalManagerConfigTest, SyncOnCommitDisabled) {
     WAL_SKIP_IF_NO_ODIRECT(wal_dir.path);
 
+    auto mut_cfg = stratadb::test::test_mutable_config();
     mut_cfg.wal_tuning.sync_on_commit = false;
     auto result = config_mgr.update_mutable(mut_cfg);
     ASSERT_TRUE(result.has_value());

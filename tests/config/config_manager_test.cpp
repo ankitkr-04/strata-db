@@ -1,4 +1,5 @@
 #include "../support/common.hpp"
+#include "../support/test_config.hpp"
 #include "stratadb/config/config_manager.hpp"
 #include "stratadb/memory/epoch_manager.hpp"
 
@@ -25,8 +26,8 @@ TEST(ConfigManagerTest, BasicRead) {
     EpochManager epoch;
     EpochManager::ThreadRegistrationGuard tg(epoch);
 
-    MutableConfig mut{};
-    ImmutableConfig imm{};
+    auto imm = stratadb::test::test_immutable_config();
+    auto mut = stratadb::test::test_mutable_config();
 
     ConfigManager mgr(imm, mut, epoch);
 
@@ -42,8 +43,8 @@ TEST(ConfigManagerTest, UpdateVisibility) {
     EpochManager epoch;
     EpochManager::ThreadRegistrationGuard tg(epoch);
 
-    MutableConfig mut{};
-    ImmutableConfig imm{};
+    auto imm = stratadb::test::test_immutable_config();
+    auto mut = stratadb::test::test_mutable_config();
 
     ConfigManager mgr(imm, mut, epoch);
 
@@ -62,8 +63,8 @@ TEST(ConfigManagerTest, ConcurrentReaders) {
     EpochManager epoch;
     EpochManager::ThreadRegistrationGuard tg(epoch);
 
-    MutableConfig mut{};
-    ImmutableConfig imm{};
+    auto imm = stratadb::test::test_immutable_config();
+    auto mut = stratadb::test::test_mutable_config();
     ConfigManager mgr(imm, mut, epoch);
 
     constexpr int kNumThreads = 8;
@@ -89,8 +90,8 @@ TEST(ConfigManagerTest, ConcurrentReadWrite) {
     EpochManager epoch;
     EpochManager::ThreadRegistrationGuard tg(epoch);
 
-    MutableConfig mut{};
-    ImmutableConfig imm{};
+    auto imm = stratadb::test::test_immutable_config();
+    auto mut = stratadb::test::test_mutable_config();
     ConfigManager mgr(imm, mut, epoch);
 
     constexpr int kNumReaders = 8;
@@ -138,8 +139,8 @@ TEST(ConfigManagerTest, NoUseAfterFreeStress) {
     EpochManager epoch;
     EpochManager::ThreadRegistrationGuard tg(epoch);
 
-    MutableConfig mut{};
-    ImmutableConfig imm{};
+    auto imm = stratadb::test::test_immutable_config();
+    auto mut = stratadb::test::test_mutable_config();
     ConfigManager mgr(imm, mut, epoch);
 
     constexpr int kNumThreads = 12;
@@ -199,8 +200,8 @@ TEST(ConfigManagerTest, PointerStability) {
     EpochManager epoch;
     EpochManager::ThreadRegistrationGuard tg(epoch);
 
-    MutableConfig mut{};
-    ImmutableConfig imm{};
+    auto imm = stratadb::test::test_immutable_config();
+    auto mut = stratadb::test::test_mutable_config();
     ConfigManager mgr(imm, mut, epoch);
 
     auto guard = mgr.get_mutable();

@@ -1,4 +1,5 @@
 
+#include "../support/test_config.hpp"
 #include "stratadb/config/immutable/memory_config.hpp"
 #include "stratadb/config/immutable/page_config.hpp"
 #include "stratadb/memory/virtual_region.hpp"
@@ -7,35 +8,17 @@
 #include <cstddef>
 #include <cstring>
 #include <gtest/gtest.h>
-#include <limits>
 
 using namespace stratadb::memory;
 using namespace stratadb::config;
 
-namespace {
-
-auto make_cfg(std::size_t total_bytes,
-              PageStrategy strategy = PageStrategy::Standard4K,
-              bool prefault = false,
-              NumaPolicy numa = NumaPolicy::UMA) -> MemoryConfig {
-    MemoryConfig cfg{};
-    cfg.total_budget_bytes = total_bytes;
-    cfg.tlab_size_bytes = 2ULL * 1024 * 1024;
-    cfg.block_alignment_bytes = 4096;
-    cfg.large_alloc_tlab_fraction = 2;
-    cfg.page_strategy = strategy;
-    cfg.prefault_on_init = prefault;
-    cfg.numa_policy = numa;
-    return cfg;
-}
-
-} // namespace
+namespace {} // namespace
 
 // Tests
 
 TEST(VirtualRegion, BasicAllocation) {
     constexpr std::size_t kSize = 4ULL * 1024 * 1024; // 4 MiB
-    auto result = VirtualRegion::allocate(make_cfg(kSize));
+    auto result = VirtualRegion::allocate(stratadb::test::test_memory_config(kSize));
 
     ASSERT_TRUE(result.has_value()) << "VirtualRegion::allocate returned error";
     EXPECT_NE(result->data(), nullptr);
@@ -46,7 +29,7 @@ TEST(VirtualRegion, PageAlignment) {
     const std::size_t page_sz = stratadb::utils::system_page_size();
     constexpr std::size_t kSize = 8ULL * 1024 * 1024;
 
-    auto result = VirtualRegion::allocate(make_cfg(kSize));
+    auto result = VirtualRegion::allocate(stratadb::test::test_memory_config(kSize));
     ASSERT_TRUE(result.has_value());
 
     const auto addr = reinterpret_cast<std::uintptr_t>(result->data());
@@ -55,7 +38,7 @@ TEST(VirtualRegion, PageAlignment) {
 
 TEST(VirtualRegion, ReadAndWrite) {
     constexpr std::size_t kSize = 4ULL * 1024 * 1024;
-    auto result = VirtualRegion::allocate(make_cfg(kSize));
+    auto result = VirtualRegion::allocate(stratadb::test::test_memory_config(kSize));
     ASSERT_TRUE(result.has_value());
 
     std::byte* base = result->data();
@@ -71,7 +54,7 @@ TEST(VirtualRegion, ReadAndWrite) {
 
 TEST(VirtualRegion, MoveSemantics) {
     constexpr std::size_t kSize = 4ULL * 1024 * 1024;
-    auto result = VirtualRegion::allocate(make_cfg(kSize));
+    auto result = VirtualRegion::allocate(stratadb::test::test_memory_config(kSize));
     ASSERT_TRUE(result.has_value());
 
     VirtualRegion a = std::move(*result);
@@ -86,8 +69,8 @@ TEST(VirtualRegion, MoveSemantics) {
 TEST(VirtualRegion, MoveAssignment) {
     constexpr std::size_t kSize = 4ULL * 1024 * 1024;
 
-    auto r1 = VirtualRegion::allocate(make_cfg(kSize));
-    auto r2 = VirtualRegion::allocate(make_cfg(kSize));
+    auto r1 = VirtualRegion::allocate(stratadb::test::test_memory_config(kSize));
+    auto r2 = VirtualRegion::allocate(stratadb::test::test_memory_config(kSize));
     ASSERT_TRUE(r1.has_value());
     ASSERT_TRUE(r2.has_value());
 
@@ -101,7 +84,9 @@ TEST(VirtualRegion, MoveAssignment) {
 TEST(VirtualRegion, HugePagesOpportunisticDoesNotCrash) {
     constexpr std::size_t kSize = 8ULL * 1024 * 1024;
     // May fall back to standard 4K if hugepages are unavailable.
-    auto result = VirtualRegion::allocate(make_cfg(kSize, PageStrategy::Huge2M_Opportunistic));
+    auto cfg = stratadb::test::test_memory_config(kSize);
+    cfg.page_strategy = PageStrategy::Huge2M_Opportunistic;
+    auto result = VirtualRegion::allocate(cfg);
 
     // Either succeeds with 2M pages or silently falls back to 4K.
     EXPECT_TRUE(result.has_value()) << "Opportunistic huge-page allocation should never fail outright";
@@ -114,7 +99,10 @@ TEST(VirtualRegion, HugePagesOpportunisticDoesNotCrash) {
 
 TEST(VirtualRegion, PrefaultDoesNotCrash) {
     constexpr std::size_t kSize = 4ULL * 1024 * 1024;
-    auto result = VirtualRegion::allocate(make_cfg(kSize, PageStrategy::Standard4K, /*prefault=*/true));
+    auto cfg = stratadb::test::test_memory_config(kSize);
+    cfg.page_strategy = PageStrategy::Standard4K;
+    cfg.prefault_on_init = true;
+    auto result = VirtualRegion::allocate(cfg);
 
     ASSERT_TRUE(result.has_value());
     EXPECT_NE(result->data(), nullptr);
@@ -123,7 +111,13 @@ TEST(VirtualRegion, PrefaultDoesNotCrash) {
 TEST(VirtualRegion, NumaInterleavedDoesNotCrash) {
     constexpr std::size_t kSize = 4ULL * 1024 * 1024;
     // On non-NUMA systems mbind may fail gracefully; the allocator falls back.
-    auto result = VirtualRegion::allocate(make_cfg(kSize, PageStrategy::Standard4K, false, NumaPolicy::Interleaved));
+    auto cfg = stratadb::test::test_memory_config(kSize);
+    cfg.page_strategy = PageStrategy::Standard4K;
+    cfg.numa_policy = NumaPolicy::Interleaved;
+
+    cfg.prefault_on_init = false;
+
+    auto result = VirtualRegion::allocate(cfg);
 
     // On systems without NUMA, VirtualRegion::allocate may still succeed
     // (mbind failure for Interleaved is not fatal).
@@ -137,7 +131,10 @@ TEST(VirtualRegion, NumaInterleavedDoesNotCrash) {
 
 TEST(VirtualRegion, ActualPageStrategyReflectsReality) {
     constexpr std::size_t kSize = 4ULL * 1024 * 1024;
-    auto result = VirtualRegion::allocate(make_cfg(kSize, PageStrategy::Standard4K));
+
+    auto cfg = stratadb::test::test_memory_config(kSize);
+    cfg.page_strategy = PageStrategy::Standard4K;
+    auto result = VirtualRegion::allocate(cfg);
 
     ASSERT_TRUE(result.has_value());
     // Standard4K never degrades; it must always match.
