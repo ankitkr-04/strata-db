@@ -25,8 +25,10 @@ enum class SegmentState : uint8_t {
 struct Segment {
     std::atomic<SegmentState> state{SegmentState::Empty};
     io::UniqueFd fd{};        // valid only during Creating, Ready, Active
-    uint64_t sequence{0};     // monotonic; encoded in the filename
-    uint64_t write_offset{0}; // absolute file offset; Flusher-owned after activation
+    std::atomic<uint64_t> sequence{0};     
+    std::atomic<uint64_t> write_offset{0};
+    // uint64_t sequence{0};     // monotonic; encoded in the filename
+    // uint64_t write_offset{0}; // absolute file offset; Flusher-owned after activation
     uint64_t min_lsn{0};      // LSN of first block; 0 = not yet written
     uint64_t max_lsn{0};      // LSN of last block; stamped into footer at seal time
     uint8_t pool_index{0};    // index into WalSegmentPool::segments_[]
